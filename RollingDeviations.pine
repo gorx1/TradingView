@@ -1,0 +1,40 @@
+//@version=4
+study(title="Rolling deviations", overlay=true)
+
+length = input(50)
+source = input(close)
+
+ls = input(false, title="Log-space")
+src = ls == true?log(source):source
+
+mean = sma(src, length)
+median = percentile_nearest_rank(src, length, 50)
+dev1 = stdev(src, length)
+dev2 = stdev(src, length) * 2
+dev3 = stdev(src, length) * 3
+dev4 = stdev(src, length) * 4
+dev5 = stdev(src, length) * 5
+
+lower_dev1 = mean - dev1
+upper_dev1 = mean + dev1
+lower_dev2 = mean - dev2
+upper_dev2 = mean + dev2
+lower_dev3 = mean - dev3
+upper_dev3 = mean + dev3
+lower_dev4 = mean - dev4
+upper_dev4 = mean + dev4
+lower_dev5 = mean - dev5
+upper_dev5 = mean + dev5
+
+p_mean = plot(ls == true?exp(mean):mean, color=#9C27B0, title="Mean")
+p_median = plot(ls == true?exp(median):median, color=#E10E54, title="Median", display=display.none)
+p_lower_dev1 = plot(ls == true?exp(lower_dev1):lower_dev1, color=#2196F3, title="Lower dev 1")
+p_upper_dev1 = plot(ls == true?exp(upper_dev1):upper_dev1, color=#2196F3, title="Upper dev 1")
+p_lowew_dev2 = plot(ls == true?exp(lower_dev2):lower_dev2, color=#2196F3, title="Lower dev 2")
+p_upper_dev2 = plot(ls == true?exp(upper_dev2):upper_dev2, color=#2196F3, title="Upper dev 2")
+p_lower_dev3 = plot(ls == true?exp(lower_dev3):lower_dev3, color=#787B86, title="Lower dev 3")
+p_upper_dev3 = plot(ls == true?exp(upper_dev3):upper_dev3, color=#787B86, title="Upper dev 3")
+p_lower_dev4 = plot(ls == true?exp(lower_dev4):lower_dev4, color=#2196F3, title="Lower dev 4", display=display.none)
+p_upper_dev4 = plot(ls == true?exp(upper_dev4):upper_dev4, color=#2196F3, title="Upper dev 4", display=display.none)
+p_lowew_dev5 = plot(ls == true?exp(lower_dev5):lower_dev5, color=#2196F3, title="Lower dev 5", display=display.none)
+p_upper_dev5 = plot(ls == true?exp(upper_dev5):upper_dev5, color=#2196F3, title="Upper dev 5", display=display.none)
