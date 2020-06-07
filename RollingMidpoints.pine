@@ -1,0 +1,35 @@
+//@version=4
+study("Rolling midpoints", overlay=true)
+
+length = input(50)
+source = input(close)
+
+
+mode = input(title="Basis", defval="Mid-range", options=["Mid-range", "Mean", "Median"])
+ls = input(false, title="Log-space")
+src = ls == true?log(source):source
+
+mean = sma(src, length)
+median = percentile_nearest_rank(src, length, 50)
+midrange = (highest(src, length) + lowest(src, length))/2
+max = highest(src, length)
+min = lowest(src, length)
+
+basis = if mode == "Mid-range"
+    basis = midrange
+else if mode == "Mean"
+    basis = mean
+else
+    basis = median
+    
+higher_midpoint = (basis + highest(src, length))/2
+lower_midpoint = (basis + lowest(src, length))/2
+
+p_basis = plot(ls == true?exp(basis):basis, color=#363A45, title="Basis")
+p_higher_midpoint = plot(ls == true?exp(higher_midpoint):higher_midpoint, color=#B2B5BE, title="Higher midpoint")
+p_lower_midpoint = plot(ls == true?exp(lower_midpoint):lower_midpoint, color=#B2B5BE, title="Lower midpoint")
+p_max = plot(ls == true?exp(max):max, color=#787B86, title="Sample maximum", display=display.none)
+p_min = plot(ls == true?exp(min):min, color=#787B86, title="Sample minimum", display=display.none)
+p_mean = plot(ls == true?exp(mean):mean, color=#9C27B0, title="Mean", display=display.none)
+p_median = plot(ls == true?exp(median):median, color=#E10E54, title="Median", display=display.none)
+p_midrange = plot(ls == true?exp(midrange):midrange, color=#363A45, title="Mid-range", display=display.none)
