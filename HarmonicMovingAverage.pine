@@ -1,0 +1,32 @@
+//@version=4
+study("Harmonic Moving Average", overlay=true)
+
+length = input(50)
+source = input(close)
+ls = input(false, title="Log-space")
+src = ls == true?log(source):source
+
+pine_geometric_mean(x, y) =>
+    prod = 1.0
+    for i = 0 to y - 1
+        prod := prod * x[i]
+    pow(prod, 1/y)
+    
+pine_harmonic_mean(x, y) =>
+    sum = 0.0
+    for i = 0 to y - 1
+        sum := sum + 1/x[i]
+    y/sum
+
+mean = sma(src, length)
+median = percentile_nearest_rank(src, length, 50)
+midrange = (highest(src, length) + lowest(src, length))/2
+harmonic_mean = pine_harmonic_mean(src, length)
+geometric_mean = pine_geometric_mean(src, length)
+
+
+p_midrange = plot(ls == true?exp(midrange):midrange, color=#363A45, title="Mid-range", display=display.none)
+p_mean = plot(ls == true?exp(mean):mean, color=#9C27B0, title="Mean", display=display.none)
+p_median = plot(ls == true?exp(median):median, color=#E10E54, title="Median", display=display.none)
+p_geometric_mean = plot(ls == true?exp(geometric_mean):geometric_mean, color=#9C27B0, title="Geometric mean", display=display.none)
+p_harmonic_mean = plot(ls == true?exp(harmonic_mean):harmonic_mean, color=#9C27B0, title="Harmonic mean")
