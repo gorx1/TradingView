@@ -1,0 +1,34 @@
+//@version=4
+study("Moving Centroid", overlay=true)
+
+length = input(50)
+source = input(close)
+ls = input(false, title="Log-space")
+src = ls == true?log(source):source
+_low = ls == true?log(low):low
+_high = ls == true?log(high):high
+
+density(level, _low, _high, y) =>
+    d = 0
+    for i = 0 to y -1
+        if (_low[i] <= level and _high[i] >= level)
+            d := d + 1
+        else
+            d := d + 0
+    d
+    
+pine_centroid(_low, _high, x, y) =>
+    cw = 0
+    cd = 0.0
+    w_sum = 0.0
+    d_sum = 0.0
+    for i = 0 to y -1
+        cd = x[i]
+        cw = density(x[i], _low, _high, y)
+        w_sum := w_sum + cw
+        d_sum := d_sum + cw * cd  
+    d_sum/w_sum
+    
+centroid = pine_centroid(_low, _high, src, length)
+
+plot(ls == true?exp(centroid):centroid, color=#9C27B0, title="Centroid")
