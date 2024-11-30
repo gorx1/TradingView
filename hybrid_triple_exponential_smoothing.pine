@@ -1,0 +1,128 @@
+//@version=6
+indicator('Hybrid Triple Exponential Smoothing', 'HTES', true, max_labels_count = 500)
+
+//dependencies
+ptd(data, lambda = 0) =>
+    lambda == 0 ? math.log(data) : math.pow(data,     lambda)
+pti(data, lambda = 0) =>
+    lambda == 0 ? math.exp(data) : math.pow(data, 1 / lambda)
+
+tes(src, alpha, beta, gamma, m) =>
+    l   = 0.0
+    b   = 0.0
+    s   = 0.0
+
+    l := alpha * (src -  nz(s[m], 0)                 ) + (1 - alpha) * (nz(l[1], src) + nz(b[1], 0))
+    b := beta  * (l   -  nz(l[1], src)               ) + (1 - beta ) * (nz(b[1], 0)                )
+    s := gamma * (src -  nz(l[1], src) - nz(b[1], 0) ) + (1 - gamma) * (nz(s[m], 0)                )
+
+    [l, b, s]
+
+//inputs
+source = input(close,                                                                inline = '1', group = 'Data')
+lambda = input(1.   , 'Power transform', '• no transform if 1\n• ln transform if 0', inline = '1', group = 'Data')
+
+data_alpha = input(0.25  , 'Alpha'          , inline = '1', group = 'Data smoothing'     )
+data_beta  = input(0.25  , 'Beta'           , inline = '1', group = 'Data smoothing'     )
+data_gamma = input(0.25  , 'Gamma'          , inline = '2', group = 'Data smoothing'     )
+data_m     = input(4     , 'Seasonal period', inline = '2', group = 'Data smoothing'     )
+res_alpha  = input(0.0625, 'Alpha'          , inline = '3', group = 'Residuals smoothing')
+res_beta   = input(0.0625, 'Beta'           , inline = '3', group = 'Residuals smoothing')
+res_gamma  = input(0.0625, 'Gamma'          , inline = '4', group = 'Residuals smoothing')
+res_m      = input(4     , 'Seasonal period', inline = '4', group = 'Residuals smoothing')
+err_alpha  = input(0.125 , 'Alpha'          , inline = '5', group = 'Errors smoothing'   )
+err_beta   = input(0.125 , 'Beta'           , inline = '5', group = 'Errors smoothing'   )
+err_gamma  = input(0.125 , 'Gamma'          , inline = '6', group = 'Errors smoothing'   )
+err_m      = input(4     , 'Seasonal period', inline = '6', group = 'Errors smoothing'   )
+
+k_res = input(3., 'Residuals', inline = '7', group = 'Deviation multipliers')
+k_err = input(3., 'Errors'   , inline = '7', group = 'Deviation multipliers')
+
+fore_data_point_steps = input(4 , 'Data'    , inline = '8', group = 'Forecasting steps')
+fore_data_int_steps   = input(16, 'Interval', inline = '8', group = 'Forecasting steps')
+fore_err_point_steps  = input(0 , 'Errors'  , inline = '8', group = 'Forecasting steps')
+
+//calculations
+src = ptd(source, lambda)
+
+[data_l, data_b, data_s] = tes(src, data_alpha, data_beta, data_gamma, data_m)
+fit                      = data_l + data_b + data_s
+opf                      = nz(data_l[(                     0                  ) + 1], src)//One Point Forecast (OPF) for
+                         + nz(data_b[(                     0                  ) + 1], 0  )//current datapoint that was
+                         + nz(data_s[((int((1 - 1) / data_m) + 1) * data_m - 1) + 1], 0  )//made one datapoint ago
+res                      = src - fit
+err                      = src - opf
+res_abs                  = math.abs(src - fit)
+err_abs                  = math.abs(src - opf)
+
+[res_l, res_b, res_s] = tes(res_abs, res_alpha, res_beta, res_gamma, res_m)
+res_esdev             = res_l + res_b + res_s
+fit_dev_lower         = fit - res_esdev * k_res * math.sqrt(math.pi / 2)
+fit_basis             = fit                                             
+fit_dev_upper         = fit + res_esdev * k_res * math.sqrt(math.pi / 2)
+
+[err_l, err_b, err_s] = tes(err_abs, err_alpha, err_beta, err_gamma, err_m)
+err_esdev             = err_l + err_b + err_s
+opf_dev_lower         = opf - err_esdev * k_err * math.sqrt(math.pi / 2)
+opf_basis             = opf                                             
+opf_dev_upper         = opf + err_esdev * k_err * math.sqrt(math.pi / 2)
+
+fore_err_point      = array.new_float()
+fore_data_point     = array.new_float()
+fore_data_int_lower = array.new_float()
+fore_data_int_upper = array.new_float()
+
+for i = 1 to math.max(fore_data_point_steps, fore_data_int_steps, fore_err_point_steps)
+    fore_data_point.push(data_l[0] + i * data_b[0] + data_s[(int((i - 1) / data_m) + 1) * data_m - i])
+    fore_err_point .push(err_l [0] + i * err_b [0] + err_s [(int((i - 1) / err_m ) + 1) * err_m  - i])
+
+    fore_data_int_lower.push(fore_data_point.get(i - 1) - fore_err_point.get(i - 1) * k_err * math.sqrt(math.pi / 2))
+    fore_data_int_upper.push(fore_data_point.get(i - 1) + fore_err_point.get(i - 1) * k_err * math.sqrt(math.pi / 2))
+
+//visuals
+plot(pti(fit_dev_lower, lambda), 'Fit lower deviation', color.gray  , 1, plot.style_stepline)
+plot(pti(fit_basis    , lambda), 'Fit basis'          , color.purple, 2, plot.style_stepline)
+plot(pti(fit_dev_upper, lambda), 'Fit upper deviation', color.gray  , 1, plot.style_stepline)
+plot(pti(opf_dev_lower, lambda), 'OPF lower deviation', color.gray  , 1, plot.style_stepline, display = display.none)
+plot(pti(opf_basis    , lambda), 'OPF basis'          , color.purple, 2, plot.style_stepline, display = display.none)
+plot(pti(opf_dev_upper, lambda), 'OPF upper deviation', color.gray  , 1, plot.style_stepline, display = display.none)
+
+hline(0, display = display.none)
+
+plot(pti(data_l, lambda), 'Level'    , color.purple, 2, display = display.none)
+plot(pti(data_b, lambda), 'Trend'    , color.purple, 2, display = display.none)
+plot(pti(data_s, lambda), 'Season'   , color.purple, 2, display = display.none)
+plot(pti(res   , lambda), 'Residuals', color.purple, 2, display = display.none)
+plot(pti(err   , lambda), 'Errors'   , color.purple, 2, display = display.none)
+
+plot(pti(res_abs  , lambda), 'Absolute residuals' , color.gray  , 1, plot.style_histogram, display = display.none)
+plot(pti(res_esdev, lambda), 'Residuals deviation', color.purple, 2,                       display = display.none)
+plot(pti(err_abs  , lambda), 'Absolute errors'    , color.gray  , 1, plot.style_histogram, display = display.none)
+plot(pti(err_esdev, lambda), 'Errors deviation'   , color.purple, 2,                       display = display.none)
+
+plot(pti(ta.cum(err_abs), lambda), 'SAE', color.gray, display = display.all - display.pane - display.price_scale)
+
+var labels_fore_err_point  = array.new_label()
+var labels_fore_data_point = array.new_label()
+var labels_fore_int_lower  = array.new_label()
+var labels_fore_int_upper  = array.new_label()
+
+if barstate.islast
+    for i = 1 to math.max(fore_data_point_steps, fore_data_int_steps, fore_err_point_steps)
+        labels_fore_err_point .push(label.new(na, na, color = color.gray, style = label.style_circle, size = 2))
+        labels_fore_data_point.push(label.new(na, na, color = color.gray, style = label.style_circle, size = 2))
+        labels_fore_int_lower .push(label.new(na, na, color = color.gray, style = label.style_circle, size = 1))
+        labels_fore_int_upper .push(label.new(na, na, color = color.gray, style = label.style_circle, size = 1))
+
+    if fore_data_point_steps > 0
+        for i = 0 to fore_data_point_steps - 1
+            labels_fore_data_point.get(i).set_xy(bar_index + i + 1, pti(fore_data_point.get(i), lambda))
+                                                               
+    if fore_data_int_steps > 0
+        for i = 0 to fore_data_int_steps - 1
+            labels_fore_int_lower.get(i).set_xy(bar_index + i + 1, pti(fore_data_int_lower.get(i), lambda))
+            labels_fore_int_upper.get(i).set_xy(bar_index + i + 1, pti(fore_data_int_upper.get(i), lambda))
+
+    if fore_err_point_steps > 0
+        for i = 0 to fore_err_point_steps - 1
+            labels_fore_err_point.get(i).set_xy(bar_index + i + 1, pti(fore_err_point.get(i), lambda))
