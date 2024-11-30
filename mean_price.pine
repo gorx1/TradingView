@@ -1,0 +1,30 @@
+//@version=5
+indicator('Mean Price', 'MP', true, timeframe = '')
+
+mean_price(op, hi, lo, cl, bt, st, robust = false) =>
+    bar_nt = (op * 1 + hi * 2 + lo * 2 + cl * 3 + bt * 2 + st * 2) / 12
+    bar_up = (op * 1 + hi * 4 + lo * 2 + cl * 5 + bt * 3 + st * 3) / 18
+    bar_dn = (op * 1 + hi * 2 + lo * 4 + cl * 5 + bt * 3 + st * 3) / 18
+
+    hc = math.abs(hi - cl)
+    lc = math.abs(lo - cl)
+
+    mean_price = if cl >  op
+        bar_up
+    else         if cl <  op
+        bar_dn
+    else         if cl == op
+        if      hc <  lc
+            bar_up
+        else if hc >  lc
+            bar_dn
+        else if hc == lc
+            bar_nt
+
+    robust ? bar_nt : mean_price
+
+robust = input(false)
+
+src = mean_price(open, high, low, close, hl2, hl2, robust)
+
+plot(src, 'Source', color.purple, 2, plot.style_cross)
