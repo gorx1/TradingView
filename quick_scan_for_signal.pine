@@ -1,0 +1,66 @@
+//@version=6
+indicator('Quick scan for signal', 'QSFS', timeframe = '')
+
+
+qsfs(src, len) =>
+    if      len < 1
+        var start = src
+        var total = 0.
+
+        net = math.abs(src - start)
+        
+        total += math.abs(src - nz(src[1], src))
+
+        math.sqrt(nz(net / total, 1))
+    else if len < 3
+        1
+    else
+        total = 0.
+        
+        net = math.abs(src - src[len - 1]) // yes, there
+        
+        for i = 0 to len - 2 // and here as well
+            total += math.abs(src[i] - src[i + 1])
+        
+        math.sqrt(net / total)
+
+
+source = input(close)
+length = input(0    )
+
+
+signal = qsfs(source, length)
+
+z0 = math.sqrt(1 / math.sqrt(length < 1 ? bar_index + 1 : length))
+z1 = math.sqrt(2 / math.sqrt(length < 1 ? bar_index + 1 : length)) - z0
+
+a =      z0  * (z0 * (1 - z0) / math.pow(z1, 2) - 1)
+b = (1 - z0) * (z0 * (1 - z0) / math.pow(z1, 2) - 1)
+
+mean  = a / (a + b)
+dev   = nz(math.sqrt((a * b) / (math.pow(a + b, 2) * (a + b + 1)))                                             , 1)
+skew  = nz(2 * (b - a) * math.sqrt(a + b + 1) / ((a + b + 2) * math.sqrt(a * b))                               , 1)
+kurt  = nz(6  * (math.pow(a - b, 2) * (a + b + 1) - a * b * (a + b + 2)) / (a * b * (a + b + 2) * (a + b + 3)) , 1) + 3 
+hskew = nz((b - a) * (2 * a + 2 * b + 1) * math.sqrt(a + b + 1) / (math.pow(a + b + 2, 3/2) * math.sqrt(a * b)), 1)
+hkurt = nz(24 * (math.pow(a - b, 2) * (a + b + 1) - a * b * (a + b + 2)) / (a * b * (a + b + 2) * (a + b + 3)) , 1) + 15
+
+lim_lower = mean - dev * hkurt + dev * hskew
+ext_lower = mean - dev *  kurt + dev *  skew
+dev_lower = mean - dev
+basis     = mean
+dev_upper = mean + dev
+ext_upper = mean + dev *  kurt + dev *  skew
+lim_upper = mean + dev * hkurt + dev * hskew
+
+
+plot(signal, 'Signal', color.purple, 2)
+
+plot(lim_lower < 0 ? na : lim_lower, 'Lower limit    ', color.gray   )
+plot(ext_lower < 0 ? na : ext_lower, 'Lower extension', color.gray   )
+plot(dev_lower < 0 ? na : dev_lower, 'Lower deviation', color.gray   )
+plot(basis                         , 'Basis'          , color.gray, 2)
+plot(dev_upper > 1 ? na : dev_upper, 'Upper deviation', color.gray   )
+plot(ext_upper > 1 ? na : ext_upper, 'Upper extension', color.gray   )
+plot(lim_upper > 1 ? na : lim_upper, 'Upper limit'    , color.gray   )
+
+//6    //dedicated to Charlotte de Witte & Marion Di Napoli and dem new track "Sanctum"; done it all with this track ∞
