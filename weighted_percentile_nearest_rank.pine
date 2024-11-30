@@ -1,0 +1,60 @@
+//@version=6
+indicator('Weighted percentile nearest rank', 'WPNR', true, timeframe ='', timeframe_gaps = true)
+
+
+multisort(array_base, array_second, reverse = false) =>
+    len = array_base.size()
+
+    sorted_indices      = array.sort_indices(array_base, reverse ? order.descending : order.ascending)
+    sorted_array_base   = array.new_float(len)
+    sorted_array_second = array.new_float(len)
+    
+    for i = 0 to len - 1
+        idx = sorted_indices.get(i)
+        
+        sorted_array_base  .set(i, array_base  .get(idx))
+        sorted_array_second.set(i, array_second.get(idx))
+    
+    [sorted_array_base, sorted_array_second]
+
+wpnr(data, weights, len, p) =>
+    [sorted_data, sorted_weights] = multisort(data, weights)
+    
+    sorted_weights_cum = array.new_float(len, sorted_weights.get(0))
+
+    for i = 1 to len - 1
+        sorted_weights_cum.set(i, sorted_weights_cum.get(i - 1) + sorted_weights.get(i))
+    
+    wpnr  = 0.0
+    thres = sorted_weights.sum() / 100 * p
+
+    for i = 0 to len - 1
+        if sorted_weights_cum.get(i) >= thres
+            wpnr := sorted_data.get(i)
+            break
+    
+    wpnr
+
+
+src   = input(close, 'Source'                                                )
+len   = input(256  , 'Length'                                                )
+p     = input(50   , '%'                                                     )
+time_ = input(true , 'Time'           , inline = '1', group = 'Weighting by:')
+iv    = input(true , 'Inferred volume', inline = '1', group = 'Weighting by:')
+
+
+data    = array.new_float(len)
+weights = array.new_float(len)
+
+for i = 0 to len - 1
+    weight = (time_ ? (len - i) : 1) * (iv ? math.abs(close[i] - open[i]) : 1)
+    // weight = 1 //unit weights, if u wanna do a raincheck
+    data   .set(i, src[i])
+    weights.set(i, weight)
+
+out = wpnr(data, weights, len, p)
+
+
+plot(out, 'WPNR', color.gray)
+
+// plot(percentile_nearest_rank(src, len, n)) //that one as well for a rainchech
