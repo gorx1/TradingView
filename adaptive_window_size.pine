@@ -1,0 +1,28 @@
+//@version=6
+indicator('Adaptive Window Size', 'AWS', timeframe = '', timeframe_gaps = true)
+
+
+qsfs(src) =>
+    var start = src
+    var total = 0.0
+
+    total += math.abs(src - nz(src[1], src))
+
+    net = math.abs(src - start)
+
+    math.sqrt(nz(net / total, 1))
+
+aws(sig) =>
+    math.min(math.ceil(math.exp(1 / sig)), bar_index + 1)
+
+
+source = input(close)
+
+
+sig = qsfs(source)
+aws = aws (sig   )
+mws = bar_index + 1 
+
+
+plot(aws, 'AWS', color.purple, 1, plot.style_stepline                        )
+plot(mws, 'MWS', color.gray  , 1, plot.style_stepline, display = display.none)
