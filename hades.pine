@@ -1,0 +1,140 @@
+//@version=6
+indicator('Hybrid Adaptive Double Exponential Smoothing', 'HADES', true, max_labels_count = 500)
+
+//dependencies
+ptd(data, lambda = 0) =>
+    lambda == 0 ? math.log(data) : math.pow(data,     lambda)
+pti(data, lambda = 0) =>
+    lambda == 0 ? math.exp(data) : math.pow(data, 1 / lambda)
+
+qsfs(src, start_index = 0) =>
+    if bar_index >= start_index
+        var start = src
+        var total = -(src - nz(src[1], src))
+
+        total += math.abs(src - nz(src[1], src))
+
+        net = math.abs(src - start)
+
+        math.sqrt(nz(net / total, 1))
+
+aws(sig, start_index = 0) =>
+    if bar_index >= start_index
+        math.min(math.ceil(math.exp(1 / sig)), bar_index - start_index + 1)
+
+des(src, alpha, start_index = 0) =>
+    if bar_index >= start_index
+        a   = 0.0   
+        b   = 0.0
+
+        a := alpha *  src                  + (1 - alpha) * nz(a[1], src)
+        b := alpha * (a   - nz(a[1], src)) + (1 - alpha) * nz(b[1], 0  )
+
+        [a, b]
+
+//inputs
+origin = input(0    , 'Start index'    , 'the very first bar on your chart has index 0'                              )
+source = input(close,                                                                    inline = '1', group = 'Data')
+lambda = input(1.   , 'Power transform', '• no transform if 1\n• ln transform if 0'    , inline = '1', group = 'Data')
+
+k_res = input(1., 'Residuals', inline = '2', group = 'Deviation multipliers')
+k_err = input(1., 'Errors'   , inline = '2', group = 'Deviation multipliers')
+
+fore_data_point_steps = input(4 , 'Data'    , inline = '3', group = 'Forecasting steps')
+fore_data_int_steps   = input(16, 'Interval', inline = '3', group = 'Forecasting steps')
+fore_err_point_steps  = input(0 , 'Errors'  , inline = '3', group = 'Forecasting steps')
+
+//calculations
+src = ptd (source, lambda)
+
+data_sig         = qsfs(src     , origin)
+data_len         = aws (data_sig, origin)
+data_alpha       = 1 / math.sqrt(data_len * 4)
+[data_a, data_b] = des(src, data_alpha, origin)
+fit              = data_a + data_b * (1 / data_alpha - 1)
+opf              = nz(data_a[1], src) + nz(data_b[1], 0) * (1 / nz(data_alpha[1], 1) + 1 - 1)
+res              = src - fit
+err              = src - opf
+res_abs          = math.abs(src - fit)
+err_abs          = math.abs(src - opf)
+
+res_sig        = qsfs(res_abs, origin)
+res_len        = aws (res_sig, origin)
+res_alpha      = 1 / math.sqrt(res_len * 4)
+[res_a, res_b] = des(res_abs, res_alpha, origin)
+res_esdev      = res_a + res_b * (1 / res_alpha - 1)
+fit_dev_lower  = fit - res_esdev * k_res// * math.sqrt(math.pi / 2)
+fit_basis      = fit                                             
+fit_dev_upper  = fit + res_esdev * k_res// * math.sqrt(math.pi / 2)
+
+err_sig        = qsfs(err_abs, origin)
+err_len        = aws (err_sig, origin)
+err_alpha      = 1 / math.sqrt(err_len * 4)
+[err_a, err_b] = des(err_abs, err_alpha, origin)
+err_esdev      = err_a + err_b * (1 / err_alpha - 1)
+opf_dev_lower  = opf - err_esdev * k_err// * math.sqrt(math.pi / 2)
+opf_basis      = opf                                             
+opf_dev_upper  = opf + err_esdev * k_err// * math.sqrt(math.pi / 2)
+
+fore_err_point      = array.new_float()
+fore_data_point     = array.new_float()
+fore_data_int_lower = array.new_float()
+fore_data_int_upper = array.new_float()
+
+for i = 1 to math.max(fore_data_point_steps, fore_data_int_steps, fore_err_point_steps)
+    fore_data_point.push(data_a[0] + data_b[0] * (1 / data_alpha + i - 1))
+    fore_err_point .push(err_a [0] + err_b [0] * (1 / err_alpha  + i - 1))
+
+    fore_data_int_lower.push(fore_data_point.get(i - 1) - fore_err_point.get(i - 1) * k_err)// * math.sqrt(math.pi / 2))
+    fore_data_int_upper.push(fore_data_point.get(i - 1) + fore_err_point.get(i - 1) * k_err)// * math.sqrt(math.pi / 2))
+
+cum_abs_err = ta.cum(err_abs)
+
+//visuals
+plot(pti(fit_dev_lower, lambda), 'Fit lower deviation', color.gray  , 1, plot.style_stepline)
+plot(pti(fit_basis    , lambda), 'Fit basis'          , color.purple, 2, plot.style_stepline)
+plot(pti(fit_dev_upper, lambda), 'Fit upper deviation', color.gray  , 1, plot.style_stepline)
+
+plot(pti(opf_dev_lower, lambda), 'OPF lower deviation', color.gray  , 1, plot.style_stepline, display = display.none)
+plot(pti(opf_basis    , lambda), 'OPF basis'          , color.purple, 2, plot.style_stepline, display = display.none)
+plot(pti(opf_dev_upper, lambda), 'OPF upper deviation', color.gray  , 1, plot.style_stepline, display = display.none)
+
+hline(0, display = display.none)
+
+plot(res, 'Residuals', color.purple, 2, plot.style_histogram, display = display.none)
+plot(err, 'Errors'   , color.purple, 2, plot.style_histogram, display = display.none)
+
+plot(pti(res_abs  , lambda), 'Absolute residuals' , color.gray  , 1, plot.style_histogram, display = display.none)
+plot(pti(res_esdev, lambda), 'Residuals deviation', color.purple, 2,                       display = display.none)
+plot(pti(err_abs  , lambda), 'Absolute errors'    , color.gray  , 1, plot.style_histogram, display = display.none)
+plot(pti(err_esdev, lambda), 'Errors deviation'   , color.purple, 2,                       display = display.none)
+
+plot(    data_alpha          , 'Data alpha', color.gray, display = display.all - display.pane - display.price_scale)
+plot(    res_alpha           , 'Res alpha' , color.gray, display = display.all - display.pane - display.price_scale)
+plot(    err_alpha           , 'Err alpha' , color.gray, display = display.all - display.pane - display.price_scale)
+plot(pti(cum_abs_err, lambda), 'SAE'       , color.blue, display = display.all - display.pane - display.price_scale)
+
+var labels_fore_err_point  = array.new_label()
+var labels_fore_data_point = array.new_label()
+var labels_fore_int_lower  = array.new_label()
+var labels_fore_int_upper  = array.new_label()
+
+if barstate.islast
+    for i = 1 to math.max(fore_data_point_steps, fore_data_int_steps, fore_err_point_steps)
+        labels_fore_err_point .push(label.new(na, na, color = color.gray, style = label.style_circle, size = 2))
+        labels_fore_data_point.push(label.new(na, na, color = color.gray, style = label.style_circle, size = 2))
+        labels_fore_int_lower .push(label.new(na, na, color = color.gray, style = label.style_circle, size = 1))
+        labels_fore_int_upper .push(label.new(na, na, color = color.gray, style = label.style_circle, size = 1))
+
+    if fore_data_point_steps > 0
+        for i = 0 to fore_data_point_steps - 1
+            labels_fore_data_point.get(i).set_xy(bar_index + i + 1, pti(fore_data_point.get(i), lambda))
+                                                               
+    if fore_data_int_steps > 0
+        for i = 0 to fore_data_int_steps - 1
+            labels_fore_int_lower.get(i).set_xy(bar_index + i + 1, pti(fore_data_int_lower.get(i), lambda))
+            labels_fore_int_upper.get(i).set_xy(bar_index + i + 1, pti(fore_data_int_upper.get(i), lambda))
+
+    if fore_err_point_steps > 0
+        for i = 0 to fore_err_point_steps - 1
+            labels_fore_err_point.get(i).set_xy(bar_index + i + 1, pti(fore_err_point.get(i), lambda))
