@@ -1,0 +1,196 @@
+//@version=6
+indicator('Weighted Fourier Transform: Spectral Gating & Main Frequency', 'WFTSGMF', max_labels_count = 500)
+// indicator('Weighted Fourier Transform: Spectral Gating & Main Frequency', 'WFTSGMF', true, max_labels_count = 500)
+
+//dependencies
+atan2(y, x) =>
+    angle  = math.atan(y / x)
+    sign_x = x >= 0 ? 1 : -1
+    sign_y = y >= 0 ? 1 : -1
+    angle := sign_x == 1 ? angle : angle + sign_y * math.pi
+    angle
+
+wdft(data, weights, len) =>
+    X_real     = array.new_float(len, 0)
+    X_imag     = array.new_float(len, 0)
+    // weight_sum = weights.sum()
+
+    for k = 0 to len - 1
+        sum_real = 0.
+        sum_imag = 0.
+        
+        for n = 0 to len - 1
+            angle = 2 * math.pi * k * n / len
+            
+            sum_real +=  weights.get(n) * data.get(n) * math.cos(angle)
+            sum_imag += -weights.get(n) * data.get(n) * math.sin(angle)
+        
+        X_real.set(k, sum_real)
+        X_imag.set(k, sum_imag)
+        // X_real.set(k, sum_real / weight_sum)
+        // X_imag.set(k, sum_imag / weight_sum)
+
+    [X_real, X_imag]
+
+iwdft(X_real, X_imag, weights, len) =>
+    data        = array.new_float(len, 0)
+    // sum_weights = weights.sum()
+
+    for n = 0 to len - 1
+        sum_real = 0.
+
+        for k = 0 to len - 1
+            angle = 2 * math.pi * k * n / len
+
+            sum_real += (X_real.get(k) * math.cos(angle) - X_imag.get(k) * math.sin(angle)) / weights.get(n)
+
+        
+        data.set(n, sum_real / len)
+        // data.set(n, sum_real / len * sum_weights)
+        
+        data
+
+ftfreq(n, d = 1.) =>
+    val    = 1. / (n * d)
+    result = array.new_float(n)
+
+    if n == 1
+        result.set(0, 0)
+    else
+        N = int((n - 1) / 2 + 1)
+
+        for i = 0 to N - 1
+            result.set(i, i * val)
+
+        for i = N to n - 1
+            result.set(i, (i - n) * val)
+
+    result
+
+ptd(data, lambda = 0) =>
+    lambda == 0 ? math.log(data) : math.pow(data,     lambda)
+pti(data, lambda = 0) =>
+    lambda == 0 ? math.exp(data) : math.pow(data, 1 / lambda)
+
+wpolyreg(data, weights, len, deg = 1, off = 0) =>
+    X = matrix.new<float>(len, deg + 1, 1)
+    W = matrix.new<float>(len, len    , 0)
+
+    for i = 0 to len - 1 
+        for j = 0 to deg
+            X.set(i, j, math.pow(len - i, j))
+
+        W.set(i, i, weights.get(i))
+
+    Y = array.new_float(len)
+
+    for i = 0 to len - 1
+        Y.set(i, data.get(i))
+
+    XTW = X.transpose().mult(W)
+    B   = XTW.mult(X).pinv().mult(XTW).mult(Y)
+
+    points = array.new_float(len)
+
+    for i = 0 to len - 1
+        point = 0.
+
+        for j = 0 to deg
+            point += B.get(j) * math.pow(len - i - off, j)
+
+        points.set(i, point)
+
+    points.get(0)
+
+//inputs
+source = input(close,                                                                inline = '1', group = 'Data')
+lambda = input(1.   , 'Power transform', '• no transform if 1\n• ln transform if 0', inline = '1', group = 'Data')
+
+length  = input(0, tooltip = 'Length < 1: All-data expanding window mode; moving window mode otherwise')
+
+time_   = input(true , 'Time'             ,                                 inline = '1', group = 'Weighting by:')
+iv      = input(false, 'Inferred volume *', '! Experimental application !', inline = '1', group = 'Weighting by:')
+
+detrend = input(true, inline = '2', group = 'Detrend')
+degree  = input(1   , inline = '2', group = 'Detrend')
+
+k = input.int(1, 'Level', -1, 1, 1, '• no if -1\n• mild if 0\n• default if 1', group = 'Spectral gating')
+
+//calculations
+src = ptd(source, lambda)
+len = length > 0 ? length : bar_index + 1
+
+data    = array.new_float(len)
+weights = array.new_float(len)
+
+for i = 0 to len - 1
+    weight = (time_ ? (len - i) : 1) * (iv ? math.abs(close[i] - open[i]) : 1)
+
+    data   .set(i, src[i])
+    weights.set(i, weight)
+
+src_detr = detrend ? (src - wpolyreg(data, weights, len, degree)) : na
+
+if detrend
+    for i = 0 to len - 1
+        data.set(i, src_detr[i])
+
+[X_real, X_imag] = wdft  (data, weights, len)
+xf               = ftfreq(               len)
+
+power       = array.new_float(len)
+weight_sum  = weights.sum()
+norm_factor = weight_sum / len
+
+for i = 0 to len - 1
+    real = X_real.get(i)
+    imag = X_imag.get(i)
+    power.set(i, math.sqrt(real * real + imag * imag) / weight_sum)
+    // power.set(i, math.sqrt(real * real + imag * imag))
+
+power_mean = power.avg  ()
+power_dev  = power.stdev()
+thresh     = power_mean + power_dev * k
+
+filtered_X_real = array.new_float(len, 0)
+filtered_X_imag = array.new_float(len, 0)
+
+for i = 0 to len - 1
+    if power.get(i) > thresh
+        filtered_X_real.set(i, X_real.get(i))
+        filtered_X_imag.set(i, X_imag.get(i))
+
+recon = iwdft(filtered_X_real, filtered_X_imag, weights, len)
+// recon = iwdft(X_real, X_imag, weights, len)
+
+half_len   = math.ceil      (len / 2 )
+half_freq  = array.new_float(half_len)
+half_power = array.new_float(half_len)
+
+for i = 0 to half_len - 1
+    half_freq .set(i, xf   .get(i))
+    half_power.set(i, power.get(i))
+
+max_power_idx = bar_index > len - 2 ? half_power.indexof(half_power.max()) : na
+main_freq     = half_freq.get(max_power_idx)
+main_period   = nz(math.round(1 / main_freq), len)
+
+//visuals
+plot(main_period, 'main period'   , color.gray, display = display.none)
+plot(main_freq  , 'main frequency', color.gray, display = display.none)
+
+plot(pti(detrend ? src_detr : src, lambda), 'data'        , color.purple                        )
+plot(pti(recon.get(0)            , lambda), 'freq pass'   , color.gray                          )
+plot(pti(power.get(0)            , lambda), 'DC component', color.gray  , display = display.none)
+
+hline(lambda == 0 ? 1 : 0)
+
+var pred = array.new_label()
+
+if barstate.islast
+    for i = 0 to len - 1
+        pred.push(label.new(na, na, color = color.gray, style = label.style_circle, size = 1))
+
+    for i = 0 to len - 1
+        pred.get(i).set_xy(bar_index - i, pti(recon.get(i), lambda))
+//  ∞
