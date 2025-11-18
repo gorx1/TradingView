@@ -1,0 +1,108 @@
+//@version=6
+indicator('Stochastic Ensembling of Outputs','SEO', overlay=true)
+//by gorx1
+
+
+//  dependencies........................................................................................................
+// ema(src, alpha) =>
+//     sum = 0.0
+//     sum := na(sum[1]) ? src : alpha * src + (1 - alpha) * nz(sum[1])
+
+
+learn_phi(src) =>
+    r = src - src[1]
+    // r = math.log(src / src[1])
+    alpha = 2 / (bar_index + 1 + 1)
+
+    var float xy_ema = na
+    var float yy_ema = na
+
+    xy_ema := (1 - alpha) * nz(xy_ema, r * r[1]) + alpha * (r * r[1])
+    yy_ema := (1 - alpha) * nz(yy_ema, r * r   ) + alpha * (r * r   )
+
+    xy_ema / yy_ema
+    // math.max(-1., math.min(1., xy_ema / yy_ema)) // never had problems without clamping, but just in case
+
+
+learn_gamma(src, phi) =>
+    r = src - src[1]
+    // r = math.log(src / src[1])
+    alpha = 2 / (bar_index + 1 + 1)
+
+    var float aa_ema = na
+    a                = r - phi * r[1]
+
+    aa_ema := (1 - alpha) * nz(aa_ema, a * a) + alpha * (a * a)
+
+    math.sqrt(aa_ema / (1 - phi * phi))
+    // math.sqrt(aa_ema / (1 - phi * phi)) * ema(src, alpha)
+    // math.sqrt(aa_ema / (1 - phi * phi)) * src
+
+
+noise_gaussian(seed) => // with unit variance
+    u1 = math.random(0, 1, seed      )
+    u2 = math.random(0, 1, seed + 666)
+
+    rho   = math.sqrt(-2 * math.log(math.max(u1, 1e-256)))
+    theta = 2.0 * math.pi * u2
+    
+    rho * math.cos(theta)
+
+
+noise_colored(seed, phi, gamma, noise_states) =>
+    prev  = nz(noise_states.get(seed - 1))
+    noise = noise_gaussian(seed)
+    new   = phi * prev + math.sqrt(1 - phi * phi) * noise
+
+    noise_states.set(seed - 1, new)
+
+    new * gamma
+//  dependencies........................................................................................................
+
+
+//  main................................................................................................................
+src    = input(hlcc4, "Source") // estimates phi and gamma from this series
+target = input(hlcc4          ) // applies to another series 
+// phi   = input(0.5 ) // if u wanna hardcode the coefs
+// gamma = input(100.) // if u wanna hardcode the coefs
+
+
+phi   = learn_phi  (src     )
+gamma = learn_gamma(src, phi)
+
+
+var noise_states    = array.new_float(16)
+var noise_instances = array.new_float(16)
+
+for [i, v] in noise_instances
+    noise_instances.set(i, noise_colored(i + 1, phi, gamma, noise_states))
+//  main................................................................................................................
+
+
+// visuals..............................................................................................................
+viz_off = input(1, 'plotting visual offset')
+
+
+plot(target + noise_instances.get(0 ), 'instance 1' , color.gray, offset = viz_off)
+plot(target + noise_instances.get(1 ), 'instance 2' , color.gray, offset = viz_off)
+plot(target + noise_instances.get(2 ), 'instance 3' , color.gray, offset = viz_off)
+plot(target + noise_instances.get(3 ), 'instance 4' , color.gray, offset = viz_off)
+plot(target + noise_instances.get(4 ), 'instance 5' , color.gray, offset = viz_off)
+plot(target + noise_instances.get(5 ), 'instance 6' , color.gray, offset = viz_off)
+plot(target + noise_instances.get(6 ), 'instance 7' , color.gray, offset = viz_off)
+plot(target + noise_instances.get(7 ), 'instance 8' , color.gray, offset = viz_off)
+plot(target + noise_instances.get(8 ), 'instance 9' , color.gray, offset = viz_off)
+plot(target + noise_instances.get(9 ), 'instance 10', color.gray, offset = viz_off)
+plot(target + noise_instances.get(10), 'instance 11', color.gray, offset = viz_off)
+plot(target + noise_instances.get(11), 'instance 12', color.gray, offset = viz_off)
+plot(target + noise_instances.get(12), 'instance 13', color.gray, offset = viz_off)
+plot(target + noise_instances.get(13), 'instance 14', color.gray, offset = viz_off)
+plot(target + noise_instances.get(14), 'instance 15', color.gray, offset = viz_off)
+plot(target + noise_instances.get(15), 'instance 16', color.gray, offset = viz_off)
+
+plot(phi  , 'phi'  , color.purple, display = display.status_line)
+plot(gamma, 'gamma', color.gray  , display = display.status_line)
+// visuals..............................................................................................................
+
+
+// ∞
