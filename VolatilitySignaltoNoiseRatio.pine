@@ -1,0 +1,46 @@
+//@version=6
+indicator('Volatility Signal-to-Noise Ratio', 'VSNR', false, precision = 4, timeframe = '', timeframe_gaps = true)
+// by gorx1
+
+
+//  dependencies........................................................................................................
+learn_snr(src, len) =>
+    alpha = len < 1 ? 2 / (bar_index + 1 + 1) : 3 / (len + 2) // yes, 3 / (len + 2), it minimizes error with WMA
+
+    mu_ema = 0.
+    sq_ema = 0.
+
+    mu_ema := alpha * src       + (1 - alpha) * nz(mu_ema[1], src      )
+    sq_ema := alpha * src * src + (1 - alpha) * nz(sq_ema[1], src * src)
+
+ 
+    mu_ema / math.sqrt(sq_ema - mu_ema * mu_ema)
+//  dependencies........................................................................................................
+
+
+//  data interval logic.................................................................................................
+len = input(1024, 'length', tooltip = 'put on zero to use all available data')
+//  data interval logic.................................................................................................
+
+
+//  main................................................................................................................
+source = input(close)
+
+src = math.abs(source - source[1])
+// src = math.abs(math.log(source / source[1]))
+
+vsnr = learn_snr(src, len)
+//  main................................................................................................................
+
+
+//  visuals.............................................................................................................
+plot(vsnr, 'VSNR', color.gray, 2)
+
+//  by student t with v 3, 4, 5; done with python mpmath module, so precision Is Legit
+hline(0.82551616, 'vsnr lower dev', color.purple) // v 3
+hline(1         , 'vsnr basis'    , color.gray  ) // v 4
+hline(1.08430101, 'vsnr upper dev', color.purple) // v 5
+//  visuals.............................................................................................................
+
+
+// ∞
