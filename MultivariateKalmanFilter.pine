@@ -1,0 +1,280 @@
+//@version=6
+indicator('Multivariate Kalman Filter', 'MKF', true, timeframe = '', timeframe_gaps = true)
+// by gorx1
+
+
+//  dependencies........................................................................................................
+identity_matrix(int n) =>
+    m = matrix.new<float>(n, n, 0.0)
+
+    for i = 0 to n - 1
+        matrix.set(m, i, i, 1)
+
+    m
+
+
+kalman_filter(F, H, Q, R, z, x_init, P_init) => //  'all' inputs are matrixes
+    x = matrix.new<float>(matrix.rows(x_init), matrix.columns(x_init), 0.)
+    P = matrix.new<float>(matrix.rows(P_init), matrix.columns(P_init), 0.)
+
+    x_prev = na(x[1]) ? x_init : x[1]
+    P_prev = na(P[1]) ? P_init : P[1]
+
+    //  predict
+    x_pred = matrix.mult(F, x_prev)
+    Ft     = matrix.transpose(F)
+    P_pred = matrix.sum(matrix.mult(F, matrix.mult(P_prev, Ft)), Q)
+
+    //  update
+    Ht    = matrix.transpose(H)
+    S     = matrix.sum(matrix.mult(H, matrix.mult(P_pred, Ht)), R)
+    Si    = S.pinv()
+    K     = matrix.mult(P_pred, matrix.mult(Ht, Si))
+    y     = matrix.diff(z, matrix.mult(H, x_pred))
+    x_new = matrix.sum(x_pred, matrix.mult(K, y))
+
+    I     = identity_matrix(matrix.rows(P_pred))
+    KH    = matrix.mult(K, H)
+
+
+    // P_new = matrix.mult(matrix.diff(I, KH), P_pred) //  canon
+
+    ImKH  = matrix.diff(I,KH)                                                                             //  safe
+    ImKHt = matrix.transpose(ImKH)                                                                        //  safe
+    Kt    = matrix.transpose(K)                                                                           //  safe
+    P_new = matrix.sum(matrix.mult(ImKH, matrix.mult(P_pred, ImKHt)), matrix.mult(K, matrix.mult(R, Kt))) //  safe
+
+    P_new := matrix.mult(matrix.sum(P_new, matrix.transpose(P_new)), 0.5) //  symmetry enforcement
+
+
+    x := matrix.copy(x_new)
+    P := matrix.copy(P_new)
+
+
+    [x_new, P_new] //  outputs a tuple of matrixes
+
+
+learn_phi2(y, alpha, eps) =>
+    x1 = nz(y[1], y )
+    x2 = nz(y[2], x1)
+
+
+    var float s11 = x1 * x1
+    var float s22 = x2 * x2
+    var float s12 = x1 * x2
+    var float s1y = x1 * y
+    var float s2y = x2 * y
+
+    s11 := (1 - alpha) * nz(s11[1], s11) + alpha * (x1 * x1)
+    s22 := (1 - alpha) * nz(s22[1], s22) + alpha * (x2 * x2)
+    s12 := (1 - alpha) * nz(s12[1], s12) + alpha * (x1 * x2)
+    s1y := (1 - alpha) * nz(s1y[1], s1y) + alpha * (x1 * y )
+    s2y := (1 - alpha) * nz(s2y[1], s2y) + alpha * (x2 * y )
+
+    det = s11 * s22 - s12 * s12
+
+    phi1 = 0.
+    phi2 = 0.
+
+    if math.abs(det) > eps
+        phi1 := (s22 * s1y - s12 * s2y) / det
+        phi2 := (s11 * s2y - s12 * s1y) / det
+    else
+        //  pseudo-inverse fallback
+        if s11 > s22
+            phi1 := s1y / s11
+            phi2 := 0.
+        else
+            phi1 := 0.
+            phi2 := s2y / s22
+
+
+    [phi1, phi2, det]
+
+
+learn_vari(src, alpha) =>
+    mu_ema = 0.
+    sq_ema = 0.
+
+    mu_ema := alpha * src       + (1 - alpha) * nz(mu_ema[1], src      )
+    sq_ema := alpha * src * src + (1 - alpha) * nz(sq_ema[1], src * src)
+
+ 
+    sq_ema - mu_ema * mu_ema
+
+
+learn_mean(src, alpha) =>
+    mu = 0.
+
+    mu := (1 - alpha) * nz(mu[1], src) + alpha * src
+//  dependencies........................................................................................................
+
+
+//  data interval logic.................................................................................................
+len = input(1024, 'length', tooltip = 'put on zero to use all available data')
+//  data interval logic.................................................................................................
+
+
+//  main................................................................................................................
+src  = input       (close  , "Source"                          )
+mode = input.string('naive', 'use mode', ['naive', 'upscaling'])
+mult = input       (1      , 'sigma'                           )
+
+// estimates "hidden" adaptive moving regression endpoint
+kalman_naive(src, len) =>
+    //  all required later
+    dt    = 1
+    alpha = len < 1 ? (2 / (bar_index + 1 + 1)) : (3 / (len + 2))
+
+    r_scalar = learn_vari(src, alpha)
+
+    trend    = learn_mean(src   - nz(src  [1], src  ), alpha)
+    q_trend  = learn_vari(trend - nz(trend[1], trend), alpha)
+
+    p0_pos   = learn_vari(src, alpha)
+    p0_trend = math.max(q_trend, learn_vari(src - nz(src[1], src), alpha), 1e-8)
+
+    //  state transition matrix
+    F = matrix.new<float>(2, 2, 0.)
+
+    matrix.set(F, 0, 0, 1 )
+    matrix.set(F, 0, 1, dt)
+    matrix.set(F, 1, 0, 0 )
+    matrix.set(F, 1, 1, 1 )
+
+    //  observation matrix
+    H = matrix.new<float>(1, 2, 0.)
+
+    matrix.set(H, 0, 0, 1)
+    matrix.set(H, 0, 1, 0)
+
+    //  Process noise covariance matrix
+    Q = matrix.new<float>(2, 2, 0.)
+
+    matrix.set(Q, 0, 0, 0      )
+    matrix.set(Q, 0, 1, 0      )
+    matrix.set(Q, 1, 0, 0      )
+    matrix.set(Q, 1, 1, q_trend)
+
+    //  measurement noise covariance maxtrix
+    R = matrix.new<float>(1, 1, r_scalar)
+
+    // measurement vector
+    z = matrix.new<float>(1, 1, src)
+
+    //  initial state vector
+    x0 = matrix.new<float>(2, 1, 0.)
+
+    matrix.set(x0, 0, 0, src  )
+    matrix.set(x0, 1, 0, trend)
+
+    //  initial covariance matrix
+    P0 = matrix.new<float>(2, 2, 0.)
+
+    matrix.set(P0, 0, 0, p0_pos  )
+    matrix.set(P0, 0, 1, 0       )
+    matrix.set(P0, 1, 0, 0       )
+    matrix.set(P0, 1, 1, p0_trend)
+
+    // do kalman
+    [x_k, P_k] = kalman_filter(F, H, Q, R, z, x0, P0)
+
+    fit =           matrix.get(x_k, 0, 0)
+    dev = math.sqrt(matrix.get(P_k, 0, 0))
+
+
+    [fit, dev]
+
+
+
+//  estimates price path if tick size would've been much lower
+kalman_upscaling(src, len) =>
+    //  all required later
+    alpha = len < 1 ? (2 / (bar_index + 1 + 1)) : (3 / (len + 2))
+
+    R_scalar = math.pow(syminfo.mintick, 2) / 12
+    
+    [phi1, phi2, det] = learn_phi2(src, alpha, 1e-8)
+    fore              = phi1 * nz(src[1], src) + phi2 * nz(src[2], src)
+    res               = src - fore
+    var_res           = learn_vari(res, alpha)
+    leak              = R_scalar * (1.0 + phi1*phi1 + phi2*phi2)
+    Q11               = math.max(1e-10, var_res - leak)
+    Q22               = 1e-8
+    Q12               = 0.0
+
+    P11_init = (math.sqrt(Q11 * (Q11 + 4 * R_scalar)) - Q11) / 2
+
+    //  state transition matrix
+    F = matrix.new<float>(2, 2, 0.)
+
+    matrix.set(F, 0, 0, phi1)
+    matrix.set(F, 0, 1, phi2)
+    matrix.set(F, 1, 0, 1.  )
+    matrix.set(F, 1, 1, 0.  )
+
+    //  observation matrix
+    H = matrix.new<float>(1, 2, 0.)
+
+    matrix.set(H, 0, 0, 1.)
+    matrix.set(H, 0, 1, 0.)
+
+    //  Process noise covariance matrix
+    Q = matrix.new<float>(2, 2, 0.)
+
+    matrix.set(Q, 0, 0, Q11)
+    matrix.set(Q, 0, 1, Q12)
+    matrix.set(Q, 1, 0, Q12)
+    matrix.set(Q, 1, 1, Q22)
+
+    //  measurement noise covariance maxtrix
+    R = matrix.new<float>(1, 1, R_scalar)
+
+    //  measurement vector
+    z = matrix.new<float>(1, 1, nz(src))
+    
+    //  initial state vector
+    x0 = matrix.new<float>(2, 1, 0.)
+
+    matrix.set(x0, 0, 0, src)
+    matrix.set(x0, 1, 0, 0. )
+
+    //  initial covariance matrix
+    P0 = matrix.new<float>(2, 2, 0.)
+
+    matrix.set(P0, 0, 0, P11_init)
+    matrix.set(P0, 0, 1, 0.      )
+    matrix.set(P0, 1, 0, 0.      )
+    matrix.set(P0, 1, 1, P11_init)
+
+    //  kalman work
+    [x_k, P_k] = kalman_filter(F, H, Q, R, z, x0, P0)
+
+    fit =           matrix.get(x_k, 0, 0)
+    dev = math.sqrt(matrix.get(P_k, 0, 0))
+
+
+    [fit, dev]
+
+
+[fit, dev] = switch mode
+    'naive'     => kalman_naive    (src, len)
+    'upscaling' => kalman_upscaling(src, len)
+
+
+low_dev = fit - dev * mult
+basis   = fit
+upp_dev = fit + dev * mult
+//  main................................................................................................................
+
+
+//  visuals.............................................................................................................
+viz_off = input(0, 'plotting  offset')
+
+plot(low_dev, 'lower dev', color.purple, 1, plot.style_stepline, offset = viz_off)
+plot(basis  , 'basis'    , color.purple, 2, plot.style_stepline, offset = viz_off)
+plot(upp_dev, 'upper dev', color.purple, 1, plot.style_stepline, offset = viz_off)
+//  visuals.............................................................................................................
+
+
+//  ∞
