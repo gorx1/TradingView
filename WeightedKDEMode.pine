@@ -1,0 +1,128 @@
+//@version=6
+indicator('Weighted KDE Mode', 'WKDEM', true, timeframe = '', timeframe_gaps = false)
+//by gorx1
+
+
+//  dependencies........................................................................................................
+kde_kernel(kernel_name, distance, bandwidth) => //  raw kernels, ain't unit variance ones
+    u = distance / bandwidth
+    switch kernel_name
+        'beta2'    => math.abs(u) <= 1 ? 0.75                             / bandwidth * (1 - u * u)                 : 0
+        'uniform'  => math.abs(u) <= 1 ? 0.5                              / bandwidth                               : 0
+        'normal'   =>                    1 / math.sqrt(2 * math.pi)       / bandwidth * math.exp(-0.5 * u * u)
+        'laplace'  =>                    0.5                              / bandwidth * math.exp(-math.abs(u))
+        'student5' =>                    8 / (3 * math.sqrt(5) * math.pi) / bandwidth * math.pow(1 + u * u / 5, -3)
+
+
+kde(data, weights, kernel_name, bandwidth, nsteps, len) =>
+    minX   = array.min(data)
+    maxX   = array.max(data)
+    range_ = maxX - minX
+    n      = int(2 * nsteps + 1)
+    x      = array.new_float(n)
+    y      = array.new_float(n)
+
+    for k = 0 to n - 1
+        xi  = minX + range_ / (n - 1) * k
+        acc = 0.
+
+        for j = 0 to len - 1
+            acc += weights.get(j) * kde_kernel(kernel_name, xi - data.get(j), bandwidth)
+            
+        x.set(k, xi                      )
+        y.set(k, acc / array.sum(weights))  
+
+    [x, y]  //  x = prices, y = probabilities
+
+
+kde_mode(data, weights, kernel_name, bandwidth, nsteps, len) =>
+    [values, probabilities] = kde(data, weights, kernel_name, bandwidth, nsteps, len)
+
+    array.new<float>(len, values.get(probabilities.indexof(probabilities.max())))
+//  dependencies........................................................................................................
+
+
+//  data interval logic.................................................................................................
+anchor  = input.string('Session', 'anchor',
+ ['1', '5', '24h', 'Session', 'Year', 'Cumulative', 'Moving window', 'Custom session'], group = 'interval')
+
+length  = input        (256        , 'moving window length' , group = 'interval')
+session = input.session('0000-2345', 'custom session period', group = 'interval')
+hybrid  = input        (false      , 'hybrid window'        , group = 'interval')
+
+isNewPeriod = switch anchor
+    '1'       => timeframe.change('1'   )
+    '5'       => timeframe.change('5'   )
+    '24h'     => timeframe.change('1440')
+	'Session' => timeframe.change('D'   )
+	'Year'    => timeframe.change('12M' )
+
+if na(close[1])
+	isNewPeriod := true
+
+var barsInSession = 0
+barsInSession    := isNewPeriod ? 1 : 1 + barsInSession
+
+var barsInSessionCustom = 0
+barsInSessionCustom    := na(time('', session)) ? 1 : 1 + barsInSessionCustom
+
+len = if anchor == 'Cumulative'
+    bar_index + 1
+else  if anchor == 'Moving window'
+    length
+else  if anchor == 'Custom session'
+    barsInSessionCustom
+else
+    barsInSession + (hybrid ? length : 0)
+//  data interval logic.................................................................................................
+
+
+//  main................................................................................................................
+src         = input       (hlc3      , 'Source'                      ,               group = 'parameters')
+time_       = input       (true      , 'weighting by sequence'       , inline = '1', group = 'parameters')
+force       = input       (true      , 'weighting by inferred volume', inline = '1', group = 'parameters')
+kernel_name = input.string('student5', 'kernel'                      , 
+                           ['beta2', 'uniform', 'normal', 'laplace', 'student5']   , group = 'parameters')
+
+
+data    = array.new_float(len)
+weights = array.new_float(len)
+
+for i = 0 to len - 1
+    data   .set(i, src[i]                                                                                    )
+    weights.set(i, (time_ ? (len - i) : 1) * (force ? math.abs(close[i] - open[i]) / syminfo.mintick + 1 : 1))
+
+
+h_constant = switch kernel_name
+    'beta2'    => 1.71877193 //  properly solved and computed with mpmath python module, 256 decimal precision
+    'uniform'  => 1.35096004 //  properly solved and computed with mpmath python module, 256 decimal precision
+    'normal'   => 0.77638836 //  properly solved and computed with mpmath python module, 256 decimal precision
+    'laplace'  => 0.57434918 //  properly solved and computed with mpmath python module, 256 decimal precision
+    'student5' => 0.61736376 //  properly solved and computed with mpmath python module, 256 decimal precision
+
+nsteps    = len // equality in steps across fields
+bandwidth = ta.range(src, len) / math.sqrt(12) * math.pow(len, -0.2) * h_constant
+
+//  workaround for easy manual backtesting due to high algocomplexity of the thing
+calc_period = input(2048, 'calculate for N bars', 'calculation period'              , group = 'parameters')
+calc_start  = input(0   , 'starting at bar N'   , "put 0 to calculate 'last' N bars", group = 'parameters')
+
+float center = na
+
+if calc_start < 1
+    if last_bar_index - bar_index < calc_period
+        center := kde_mode(data, weights, kernel_name, bandwidth, nsteps, len).get(0)
+else
+    if (bar_index < calc_period + calc_start) and (bar_index > calc_start)
+        center := kde_mode(data, weights, kernel_name, bandwidth, nsteps, len).get(0)
+//  main................................................................................................................
+
+
+//  visuals.............................................................................................................
+viz_off = input(1, 'plotting  offset', group = 'style')
+
+plot(center, 'wkdem', color.purple, 2, plot.style_stepline, offset = viz_off)
+//  visuals.............................................................................................................
+
+
+//  ∞
