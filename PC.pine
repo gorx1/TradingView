@@ -1,0 +1,169 @@
+//@version=6
+indicator('Pair Creation', 'PC', precision = 4, timeframe = '', timeframe_gaps = true, dynamic_requests = true)
+//by gorx1
+
+
+//  dependencies........................................................................................................
+operation(a, b, op) =>
+    switch op
+        'division'       => a / b
+        'multiplication' => a * b
+
+
+ivd(cl, op, tick_size, multi = 256) => //  inferred volume delta
+    multi * (cl - op) / tick_size
+
+
+iv(cl, lo, hi, op, tick_size, multi = 256) => //  inferred volume
+    hc = math.abs(hi - cl)
+    lc = math.abs(lo - cl)
+
+    iv = if cl > op
+        (op - lo) + (hi - lo) + (hi - cl)
+    else         if cl <  op
+        (hi - op) + (hi - lo) + (cl - lo)
+    else         if cl == op
+        if hc < lc
+            (op - lo) + (hi - lo) + (hi - cl)
+        else if hc >  lc
+            (hi - op) + (hi - lo) + (cl - lo)
+        else if hc == lc
+            (op - lo) + (hi - lo) + (hi - cl)
+
+
+    multi * iv / tick_size + 1
+
+
+itc(hi, lo, tick_size, multi = 256) => //  inferred tick count
+    multi * (hi - lo) / tick_size + 1
+//  dependencies........................................................................................................
+
+
+//  data................................................................................................................
+LEG2_TOOLTIP = 'If all 3: financing, storage and yield, are put on zero, forward-pricing model becomes inactive'
+FPM          = 'forward pricing model (applied to Leg 2)'
+
+leg1sym = input.symbol('YM1!' , 'Leg 1', group = 'data')
+leg2sym = input.symbol('ES1!' , 'Leg 2', group = 'data')
+
+dir = input(true, 'direct || inverse', 'on: direct\noff: inverse', group = FPM)
+
+financing = input(0., 'financing', LEG2_TOOLTIP, group = FPM)
+storage   = input(0., 'storage  ', LEG2_TOOLTIP, group = FPM)
+yield     = input(0., 'yield    ', LEG2_TOOLTIP, group = FPM)
+
+expiration = input.time(timestamp("19 Dec 2025 17:00 -0600"), 'expiration date', group = FPM)
+
+
+T_days  = (expiration - time) / 1000 / 60 / 60 / 24
+T_years = T_days / 365.0
+
+f = math.exp((financing + storage - yield) * (dir ? 1 : -1) * T_years)
+
+_exp() => [open, high, low, close, hl2, hl2,
+           syminfo.mintick, syminfo.pointvalue, syminfo.mincontract]
+
+[op1, hi1, lo1, cl1, bt1, st1,
+ mt1, pv1, mc1                ] = request.security(leg1sym, timeframe.period, 
+                                                                                                              _exp())
+[op2, hi2, lo2, cl2, bt2, st2,
+ mt2, pv2, mc2                ] = request.security(leg2sym, timeframe.period, 
+                                                                                                              _exp())
+op2 *= f 
+hi2 *= f 
+lo2 *= f 
+cl2 *= f 
+bt2 *= f 
+st2 *= f 
+//  data................................................................................................................
+
+
+//  main................................................................................................................
+mode = input.string('division', '', ['division', 'multiplication'], group = 'Pair construction by:')
+
+
+mt = operation(mt1, mt2, mode)
+pv = operation(pv1, pv2, mode)
+mc = operation(mc1, mc2, mode)
+
+op  = operation(op1, op2, mode)
+hi  = operation(hi1, hi2, mode)
+lo  = operation(lo1, lo2, mode)
+cl  = operation(cl1, cl2, mode)
+bt  = operation(bt1, bt2, mode)
+st  = operation(st1, st2, mode)
+
+
+ivd1 = ivd(cl1, op1, mt1)
+ivd2 = ivd(cl2, op2, mt2)
+
+iv1 = iv(cl1, lo1, hi1, op1, mt1)
+iv2 = iv(cl2, lo2, hi2, op2, mt2)
+
+itc1 = itc(hi1, lo1, mt1)
+itc2 = itc(hi2, lo2, mt2)
+
+
+ivd = operation(ivd1, ivd2, mode) * mt * pv // pv transfers volatility to currency space, mt cancel the efftc of previous devision by tick size in ivd(), iv(), itc() fucntions
+iv  = operation( iv1,  iv2, mode) * mt * pv // pv transfers volatility to currency space, mt cancel the efftc of previous devision by tick size in ivd(), iv(), itc() fucntions
+itc = operation(itc1, itc2, mode) * mt * pv // pv transfers volatility to currency space, mt cancel the efftc of previous devision by tick size in ivd(), iv(), itc() fucntions
+
+ivd := na(ivd) ? ivd[1] : ivd
+
+//  built in simple hedge ratio
+len = input(256, 'Length', group = 'Hedge ratio')
+
+
+mp = (op * 1 + hi * 2 + lo * 2 + cl * 3 + bt * 2 + st * 2) / 12 //  neutral mean price
+
+_mean(src, weight, len) =>
+    sum = 0., sum_w = 0.
+    
+    for i = 0 to len - 1
+        w = (len - i) * weight[i]
+        
+        sum += src[i] * w, sum_w += w
+    
+    sum / sum_w
+
+
+leg1qty = 1                           
+leg2qty = _mean(ivd, math.abs(mp), len) 
+//  main................................................................................................................
+
+
+//  visuals.............................................................................................................
+color_dn = color.red
+color_nt = color.purple
+color_up = color.blue
+
+color_cs      = cl      > op ? color_up : cl      < op ? color_dn : color_nt
+color_ivd     = ivd     > 0  ? color_up : ivd     < 0  ? color_dn : color_nt
+color_iv      = iv      > 0  ? color_up : iv      < 0  ? color_dn : color_nt
+color_itc     = itc     > 0  ? color_up : itc     < 0  ? color_dn : color_nt
+color_leg2qty = leg2qty > 0  ? color_up : leg2qty < 0  ? color_dn : color_nt
+
+color_csh = cl > op ? color.new(color_up, 100)
+          : cl < op ? color.new(color_dn, 100)
+          :           color.new(color_nt, 100)
+
+
+plot      (            mp, 'Line'          , color.purple,                                   display = display.none)
+plotbar   (op, hi, lo, cl, 'Bars'          , color.purple                                                          )
+plotcandle(op, hi, lo, cl, 'Candles'       , color_cs    , color_cs, bordercolor = color_cs, display = display.none)
+plotcandle(op, hi, lo, cl, 'Hollow candles', color_csh   , color_cs, bordercolor = color_cs, display = display.none)
+
+plot(bt , 'Biggest tick'         , color_nt , 1, plot.style_circles, display = display.none) //  placeholders
+plot(st , 'Smallest tick'        , color_nt , 1, plot.style_circles, display = display.none) //  placeholders
+plot(ivd, 'Inferred volume delta', color_ivd, 1, plot.style_columns, display = display.none)
+plot(iv , 'Inferred volume'      , color_iv , 1, plot.style_columns, display = display.none)
+plot(itc, 'Inferred tick count'  , color_itc, 1, plot.style_columns, display = display.none)
+
+plot(na, 'space')
+
+plot(leg1qty, 'Leg 1 quantity', color_up     , display = display.status_line)
+plot(leg2qty, 'Leg 2 quantity', color_leg2qty, display = display.status_line)
+//  visuals.............................................................................................................
+
+
+//  ∞
