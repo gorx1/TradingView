@@ -1,0 +1,169 @@
+//@version=6
+indicator('Index Construction Tool', 'ICT', precision = 4)
+//by gorx1
+
+
+//  dependencies........................................................................................................
+ivd(cl, op, tick_size, multi = 256) => //  inferred volume delta
+    multi * (cl - op) / tick_size
+
+
+iv(cl, lo, hi, op, tick_size, multi = 256) => //  inferred volume
+    hc = math.abs(hi - cl)
+    lc = math.abs(lo - cl)
+
+    iv = if cl > op
+        (op - lo) + (hi - lo) + (hi - cl)
+    else         if cl <  op
+        (hi - op) + (hi - lo) + (cl - lo)
+    else         if cl == op
+        if hc < lc
+            (op - lo) + (hi - lo) + (hi - cl)
+        else if hc >  lc
+            (hi - op) + (hi - lo) + (cl - lo)
+        else if hc == lc
+            (op - lo) + (hi - lo) + (hi - cl)
+
+
+    multi * iv / tick_size + 1
+
+
+itc(hi, lo, tick_size, multi = 256) => //  inferred tick count
+    multi * (hi - lo) / tick_size + 1
+
+
+ch_mean_weights(arr) =>
+    sum = arr.sum()
+    out = array.new_float(arr.size())
+
+    for [i, v] in arr
+        out.set(i, v / sum)
+
+
+    out
+//  dependencies........................................................................................................
+
+
+//  data................................................................................................................
+LIST_INIT = 'cbot_mini:ym1!\ncme_mini:es1!\ncme_mini:rty1!\ncme_mini:nq1!' // it's a proper good bloody list mate innit?
+
+list = input.text_area(LIST_INIT, 'symbols')
+
+exp = array.from(open, high, low, close, hl2, hl2,
+                 ivd(close, open, syminfo.mintick),
+                 iv(close, low, high, open, syminfo.mintick),
+                 itc(high, low, syminfo.mintick),
+                 syminfo.mintick, syminfo.pointvalue, syminfo.mincontract)
+
+symbols = str.split(str.trim(list), '\n')
+fields  = exp.size()
+legs    = symbols.size()
+
+data = matrix.new<float>(legs, fields)
+
+for i = 0 to legs - 1
+    data.add_row(i, request.security(symbols.get(i), timeframe.period, exp))
+//  data................................................................................................................
+
+
+//  main................................................................................................................
+mode = input.string('addition', 'Index construction by', ['addition', 'subtraction'])
+
+//  contraharmonic weights for all features
+weights = matrix.new<float>(legs, fields)
+
+for f = 0 to fields - 1
+    w = ch_mean_weights(data.col(f))
+
+    for i = 0 to legs - 1
+        weights.set(i, f, w.get(i))
+
+//  construct bars
+bar = array.new_float(fields)
+
+for f = 0 to fields - 1
+    acc = 0.
+
+    for i = 0 to legs - 1
+        w  = weights.get(i, f)
+        dw = data   .get(i, f) * w
+
+        if i == 0
+            acc := dw
+        else
+            switch mode
+                'addition'    => acc += dw
+                'subtraction' => acc -= dw
+
+    bar.set(f, acc)
+
+op  = bar.get(0)
+hi  = bar.get(1)
+lo  = bar.get(2)
+cl  = bar.get(3)
+bt  = bar.get(4)
+st  = bar.get(5)
+ivd = bar.get(6)
+iv  = bar.get(7)
+itc = bar.get(8)
+
+//  neutral mean price
+mp = (op * 1 + hi * 2 + lo * 2 + cl * 3 + bt * 2 + st * 2) / 12 
+
+//  output weights
+ow = array.new_float(legs) 
+
+for [i, v] in ow
+    op_w = weights.get(i, 0)
+    hi_w = weights.get(i, 1)
+    lo_w = weights.get(i, 2)
+    cl_w = weights.get(i, 3)
+    bt_w = weights.get(i, 4)
+    st_w = weights.get(i, 5)
+
+    ow.set(i, (op_w * 1 + hi_w * 2 + lo_w * 2 + cl_w * 3 + bt_w * 2 + st_w * 2) / 12 * data.get(i, 10))
+//  main................................................................................................................
+
+
+//  visuals.............................................................................................................
+color_dn = color.red
+color_nt = color.purple
+color_up = color.blue
+
+color_cs  = cl  > op ? color_up : cl  < op ? color_dn : color_nt
+color_ivd = ivd > 0  ? color_up : ivd < 0  ? color_dn : color_nt
+color_iv  = iv  > 0  ? color_up : iv  < 0  ? color_dn : color_nt
+color_itc = itc > 0  ? color_up : itc < 0  ? color_dn : color_nt
+
+color_csh = cl > op ? color.new(color_up, 100)
+          : cl < op ? color.new(color_dn, 100)
+          :           color.new(color_nt, 100)
+
+
+plot      (            mp, 'Line'          , color_nt ,                                   display = display.none)
+plotbar   (op, hi, lo, cl, 'Bars'          , color_nt                                                           )
+plotcandle(op, hi, lo, cl, 'Candles'       , color_cs , color_cs, bordercolor = color_cs, display = display.none)
+plotcandle(op, hi, lo, cl, 'Hollow candles', color_csh, color_cs, bordercolor = color_cs, display = display.none)
+
+plot      (            mp, 'Line (overlay)'          , color_nt ,                                   display = display.none, force_overlay = true)
+plotbar   (op, hi, lo, cl, 'Bars (overlay)'          , color_nt ,                                   display = display.none, force_overlay = true)
+plotcandle(op, hi, lo, cl, 'Candles (overlay)'       , color_cs , color_cs, bordercolor = color_cs, display = display.none, force_overlay = true)
+plotcandle(op, hi, lo, cl, 'Hollow candles (overlay)', color_csh, color_cs, bordercolor = color_cs, display = display.none, force_overlay = true)
+
+plot(bt , 'Biggest tick'         , color_nt , 1, plot.style_circles, display = display.none) //  placeholders
+plot(st , 'Smallest tick'        , color_nt , 1, plot.style_circles, display = display.none) //  placeholders
+plot(ivd, 'Inferred volume delta', color_ivd, 1, plot.style_columns, display = display.none)
+plot(iv , 'Inferred volume'      , color_iv , 1, plot.style_columns, display = display.none)
+plot(itc, 'Inferred tick count'  , color_itc, 1, plot.style_columns, display = display.none)
+
+
+var table info = table.new(position.top_right, 2, legs)
+
+if barstate.islast
+    for [i, v] in symbols
+        table.cell(info, 0, i, v                                , text_color = color.gray)
+        table.cell(info, 1, i, str.tostring(ow.get(i), '0.0000'), text_color = color.gray)
+//  visuals.............................................................................................................
+
+
+//  ∞
