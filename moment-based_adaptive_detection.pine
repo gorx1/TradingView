@@ -1,77 +1,202 @@
 //@version=6
 indicator('Moment-Based Adaptive Detection', 'MBAD', true, timeframe = '', timeframe_gaps = true)
+//by gorx1
 
 
-weighted_moments(data, weights, len) =>
-    sum_m1 = 0.0
-    sum_m2 = 0.0
-    sum_m3 = 0.0
-    sum_m4 = 0.0
-    sum_m5 = 0.0
-    sum_m6 = 0.0
-    sum_w  = 0.0
+//  dependencies........................................................................................................
+mean(array<float> data, array<float> weights, len) =>
+    sum = 0.
 
     for i = 0 to len - 1
-        datum  = data   .get(i)
-        weight = weights.get(i)
-        
-        sum_w  += weight
-        sum_m1 += datum * weight
+        sum += data.get(i) * weights.get(i)
 
-    mean = sum_m1 / sum_w
+
+    array.new<float>(len, sum / weights.sum())
+
+
+std_moments(array<float> data, array<float> weights, array<float> fit, len) =>
+    sum_w = weights.sum()
+    
+    sum_m0 = 0.
+    sum_m1 = 0.
+    sum_m2 = 0.
+    sum_m3 = 0.
+    sum_m4 = 0.
+    sum_m5 = 0.
+    sum_m6 = 0.
 
     for i = 0 to len - 1
-        datum  = data   .get(i)
         weight = weights.get(i)
-        diff   = datum - mean
-        diff_w = diff * weight
+        diff   = data   .get(i) - fit.get(i)
 
+        sum_m0 += math.pow(diff, 0) * weight
+        sum_m1 += math.pow(diff, 1) * weight
         sum_m2 += math.pow(diff, 2) * weight
         sum_m3 += math.pow(diff, 3) * weight
         sum_m4 += math.pow(diff, 4) * weight
         sum_m5 += math.pow(diff, 5) * weight
         sum_m6 += math.pow(diff, 6) * weight
 
-    dev = math.sqrt(sum_m2 / sum_w)
 
-    skew  = sum_m3 / sum_w / math.pow(dev, 3)
-    kurt  = sum_m4 / sum_w / math.pow(dev, 4)
-    hskew = sum_m5 / sum_w / math.pow(dev, 5)
-    hkurt = sum_m6 / sum_w / math.pow(dev, 6)
+    init = math.pow(sum_m0 / sum_w, 0)
 
-    [mean, dev, skew, kurt, hskew, hkurt]
+    bias = math.pow(sum_m1 / sum_w, 1 / 1)
+    dev  = math.pow(sum_m2 / sum_w, 1 / 2)
+
+    skew  = (sum_m3 / sum_w) / math.pow(dev, 3)
+    kurt  = (sum_m4 / sum_w) / math.pow(dev, 4)
+    hskew = (sum_m5 / sum_w) / math.pow(dev, 5)
+    hkurt = (sum_m6 / sum_w) / math.pow(dev, 6)
 
 
-src   = input(close, 'Source'                                                )
-len   = input(256  , 'Length'                                                )
-time_ = input(true , 'Time'           , inline = '1', group = 'Weighting by:')
-iv    = input(true , 'Inferred volume', inline = '1', group = 'Weighting by:')
+    moments = array.new_float(7)
+
+    moments.set(0,  init)
+    moments.set(1,  bias)
+    moments.set(2,   dev)
+    moments.set(3,  skew)
+    moments.set(4,  kurt)
+    moments.set(5, hskew)
+    moments.set(6, hkurt)
+
+
+    moments
+
+
+type distro
+    float low_lim
+    float low_ext
+    float low_dev
+    float basis
+    float upp_dev
+    float upp_ext
+    float upp_lim
+    float dev
+    float asym
+
+
+mbad(data_y, weights, len) =>
+    fit     = mean       (data_y, weights,      len)
+    moments = std_moments(data_y, weights, fit, len)
+    center  = fit.get(0)
+
+    init  = moments.get(0)
+    bias  = moments.get(1)
+    dev   = moments.get(2)
+    skew  = moments.get(3)
+    kurt  = moments.get(4)
+    hskew = moments.get(5)
+    hkurt = moments.get(6)
+
+
+    out = distro.new()
+
+    out.low_lim := center - (dev - bias) * (hkurt - hskew)
+    out.low_ext := center - (dev - bias) * ( kurt -  skew)
+    out.low_dev := center - (dev - bias)                  
+    out.basis   := center                                  
+    out.upp_dev := center + (dev + bias)                  
+    out.upp_ext := center + (dev + bias) * ( kurt +  skew)
+    out.upp_lim := center + (dev + bias) * (hkurt + hskew)
+
+    out.dev := dev    
+
+    out.asym := ((skew / kurt) - (hskew / hkurt)) * dev * 2
+
+
+    out
+
+
+interval_check(data, weights, lower, upper, len) =>
+    sum   = 0.
+    sum_w = 0.
+
+    for i = 0 to len - 1 
+        v      = data   .get(i)
+        w      = weights.get(i)
+
+        sum   += (v >= lower and v <= upper ? 1 : 0) * w
+        sum_w += w
+
+
+    sum / sum_w
+//  dependencies........................................................................................................
+
+
+//  data interval logic.................................................................................................
+anchor  = input.string('Session', 'anchor',
+ ['1', '5', '24h', 'Session', 'Year', 'Cumulative', 'Moving window', 'Custom session'], group = 'interval')
+
+length  = input        (256        , 'moving window length' , group = 'interval')
+session = input.session('0000-2345', 'custom session period', group = 'interval')
+hybrid  = input        (false      , 'hybrid window'        , group = 'interval')
+
+isNewPeriod = switch anchor
+    '1'       => timeframe.change('1'   )
+    '5'       => timeframe.change('5'   )
+    '24h'     => timeframe.change('1440')
+	'Session' => timeframe.change('D'   )
+	'Year'    => timeframe.change('12M' )
+
+if na(close[1])
+	isNewPeriod := true
+
+var barsInSession = 0
+barsInSession    := isNewPeriod ? 1 : 1 + barsInSession
+
+var barsInSessionCustom = 0
+barsInSessionCustom    := na(time('', session)) ? 1 : 1 + barsInSessionCustom
+
+len = if anchor == 'Cumulative'
+    bar_index + 1
+else  if anchor == 'Moving window'
+    length
+else  if anchor == 'Custom session'
+    barsInSessionCustom
+else
+    barsInSession + (hybrid ? length : 0)
+
+len := len > bar_index + 1 ? bar_index + 1 : len
+//  data interval logic.................................................................................................
+
+
+//  main................................................................................................................
+src   = input(hlc3, 'Source'                                                      )
+time_ = input(true, 'Sequence'             , inline = '1', group = 'Weighting by:')
+force = input(true, 'Inferred volume delta', inline = '1', group = 'Weighting by:')
 
 
 data    = array.new_float(len)
 weights = array.new_float(len)
 
 for i = 0 to len - 1
-    weight = (time_ ? (len - i) : 1) * (iv ? math.abs(close[i] - open[i]) : 1)
+    weight = (time_ ? (len - i) : 1) * (force ? 256 * math.abs(close[i] - open[i]) / syminfo.mintick + 1 : 1)
 
     data   .set(i, src[i])
     weights.set(i, weight)
 
-[mean, dev, skew, kurt, hskew, hkurt] = weighted_moments(data, weights, len)
 
-lim_lower = math.round_to_mintick(mean - dev * hkurt + dev * hskew)
-ext_lower = math.round_to_mintick(mean - dev *  kurt + dev *  skew)
-dev_lower = math.round_to_mintick(mean - dev                      )
-basis     = math.round_to_mintick(mean                            )
-dev_upper = math.round_to_mintick(mean + dev                      )
-ext_upper = math.round_to_mintick(mean + dev *  kurt + dev *  skew)
-lim_upper = math.round_to_mintick(mean + dev * hkurt + dev * hskew)
+distro_data = mbad(data, weights, len)
+
+prop = interval_check(data, weights, distro_data.low_dev, distro_data.upp_dev, len) //  proportion of data inside value
+//  main................................................................................................................
 
 
-plot(lim_lower, 'lower limit'    , color.red   , 1, plot.style_stepline                        )
-plot(ext_lower, 'lower extension', color.blue  , 2, plot.style_stepline                        )
-plot(dev_lower, 'lower deviation', color.gray  , 1, plot.style_stepline, display = display.none)
-plot(basis    , 'basis'          , color.purple, 2, plot.style_stepline, display = display.none)
-plot(dev_upper, 'upper deviation', color.gray  , 1, plot.style_stepline, display = display.none)
-plot(ext_upper, 'upper extension', color.red   , 2, plot.style_stepline                        )
-plot(lim_upper, 'upper limit'    , color.blue  , 1, plot.style_stepline                        )
+//  visuals.............................................................................................................
+viz_off = input(1, 'plotting offset', group = 'style') //always 1 for objective analysis, latest datapoint self inclusion is should Not be done
+
+plot(distro_data.low_lim, 'lower limit'    , color.red   , 1, plot.style_steplinebr, offset = viz_off)
+plot(distro_data.low_ext, 'lower extension', color.red   , 1, plot.style_steplinebr, offset = viz_off)
+plot(distro_data.low_dev, 'lower deviation', color.purple, 1, plot.style_steplinebr, offset = viz_off)
+plot(distro_data.basis  , 'basis'          , color.purple, 1, plot.style_steplinebr, offset = viz_off)
+plot(distro_data.upp_dev, 'upper deviation', color.purple, 1, plot.style_steplinebr, offset = viz_off)
+plot(distro_data.upp_ext, 'upper extension', color.blue  , 1, plot.style_steplinebr, offset = viz_off)
+plot(distro_data.upp_lim, 'upper limit'    , color.blue  , 1, plot.style_steplinebr, offset = viz_off)
+
+plot(na, 'space', color.gray)
+
+plot(prop, 'proportion of data inside value', color.gray)
+//  visuals.............................................................................................................
+
+
+//  ∞
