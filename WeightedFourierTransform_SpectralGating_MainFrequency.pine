@@ -1,0 +1,666 @@
+//@version=6
+indicator('Weighted Fourier Transform: Spectral Gating & Main Frequency', 'WFTSGMF', max_lines_count = 500)
+//by gorx1
+
+
+//  dependencies........................................................................................................
+method sub(array<float> a, array<float> b) =>
+    size = math.min(a.size(), b.size())
+
+    array<float> result = array.new_float(size)
+    
+    for i = 0 to size - 1
+        result.set(i, a.get(i) - b.get(i))
+
+
+    result
+
+
+method log(array<float> arr, float base = math.e) =>
+    out = array.new_float(arr.size())
+
+    for [i, v] in arr
+        out.set(i, math.log(v) / math.log(base))
+
+
+    out
+
+
+method rec(array<float> arr) =>
+    out = array.new_float(arr.size())
+
+    for [i, v] in arr
+        out.set(i, 1 / v)
+
+
+    out
+
+
+method exp(array<float> arr, float base = math.e) =>
+    out = array.new_float(arr.size())
+
+    for [i, v] in arr
+        out.set(i, math.pow(base, v))
+
+
+    out
+
+
+method pow(array<float> arr, float p) =>
+    out = array.new_float(arr.size())
+
+    for [i, v] in arr
+        out.set(i, math.pow(v, p))
+
+
+    out
+
+
+method mul(array<float> a, array<float> b) =>  //  array by array
+    size = math.min(a.size(), b.size())
+
+    array<float> result = array.new_float(size)
+    
+    for i = 0 to size - 1
+        result.set(i, a.get(i) - b.get(i))
+
+
+    result
+
+
+method mul(array<float> arr, float m) =>  //  array by constant
+    out = array.new_float(arr.size())
+
+    for [i, v] in arr
+        out.set(i, v * m)
+
+
+    out
+
+
+atan2(float y, float x) =>
+    angle  = math.atan(y / x)
+    sign_x = x >= 0 ? 1 : -1
+    sign_y = y >= 0 ? 1 : -1
+    angle := sign_x == 1 ? angle : angle + sign_y * math.pi
+
+    angle
+
+
+wdft(array<float> data, array<float> weights, int len) =>  //  Windowing inside *
+    X_real = array.new_float(len)
+    X_imag = array.new_float(len)
+
+    for k = 0 to len - 1
+        sum_real = 0.
+        sum_imag = 0.
+
+        for n = 0 to len - 1
+            angle = 2 * math.pi * k * n / len
+
+            sum_real +=  data.get(n) * math.cos(angle) * weights.get(n)  //  * <-
+            sum_imag += -data.get(n) * math.sin(angle) * weights.get(n)  //  * <-
+        
+        X_real.set(k, sum_real)
+        X_imag.set(k, sum_imag)
+
+
+    [X_real, X_imag]
+
+
+iwdft(array<float> X_real, array<float> X_imag, array<float> weights, int len) => //  De-windowing inside *
+    out = array.new_float(len)
+
+    for n = 0 to len - 1
+        sum_real = 0.
+
+        for k = 0 to len - 1
+            angle = 2 * math.pi * k * n / len
+
+            sum_real += X_real.get(k) * math.cos(angle) - X_imag.get(k) * math.sin(angle)
+        
+        array.set(out, n, sum_real / len / weights.get(n))  //  * <- yes here
+
+
+    out
+
+
+ftfreq(int n, int d = 1) =>
+    val    = 1 / (n * d)
+    result = array.new_float(n)
+
+    if      n == 1
+        result.set(0, 0)
+    else if n == 2
+        result.set(0, 0  )
+        result.set(1, 0.5)
+    else
+        // include Nyquist at index int(n/2) for even n
+        N = int(n / 2) + 1
+
+        for i = 0 to N - 1
+            result.set(i, i * val)
+
+        for i = N to n - 1
+            result.set(i, (i - n) * val)
+
+
+    result
+
+
+mean(array<float> data, array<float> weights, int len) =>  //  returns array of the same mean values, that's easier for further use
+    sum   = 0.
+    sum_w = 0.
+
+    for i = 0 to len - 1
+        weight = weights.get(i)
+
+        sum   += data.get(i) * weight
+        sum_w += weight
+
+
+    array.new<float>(len, sum / sum_w)
+
+
+linreg(array<float> data_y, array<float> data_x, array<float> weights, int len) =>
+    sum_w = 0.
+    sum_y = 0.
+    sum_x = 0.
+
+    for i = 0 to len - 1
+        weight = weights.get(i)
+
+        sum_w += weight
+        sum_y += data_y .get(i) * weight
+        sum_x += data_x .get(i) * weight
+
+    mean_y = sum_y / sum_w
+    mean_x = sum_x / sum_w
+
+    sum_dev_y  = 0.
+    sum_dev_x  = 0.
+    sum_dev_xy = 0.
+
+    for i = 0 to len - 1
+        weight = weights.get(i)
+        diff_y = data_y .get(i) - mean_y
+        diff_x = data_x .get(i) - mean_x
+
+        sum_dev_y  += diff_y * diff_y * weight
+        sum_dev_x  += diff_x * diff_x * weight
+        sum_dev_xy += diff_y * diff_x * weight
+
+    vari_y = sum_dev_y  / sum_w
+    vari_x = sum_dev_x  / sum_w
+    covari = sum_dev_xy / sum_w
+
+
+    //OLS 'b' can be calculated this way, but less efficient
+    // corr = covari / math.sqrt(vari_y * vari_x)
+    // b = math.sqrt(vari_y) / math.sqrt(vari_x) * corr
+
+    //TLS 'b', for prices vs prices regression eg
+    // delta = vari_y - vari_x
+    // z = math.sqrt(delta * delta + 4 * covari * covari)
+    // b = (vari_y - vari_x + z) / (2 * covari)
+
+    //OLS: we need This
+    b = covari / vari_x
+
+    a = mean_y - b * mean_x
+
+
+    fit = array.new_float(len)
+
+    for i = 0 to len - 1
+        // fit.set(i, nz(a + b * (data_x.get(i)), data_y.get(0)))
+        fit.set(i, a + b * data_x.get(i))
+
+
+    fit
+
+
+decomposition_dtr(array<float> data_y, array<float> data_x, array<float> weights, int len) =>  //  DTR = drift + trend + residual
+    drift         =   mean(data_y, weights, len)
+    src_dedrifted = data_y.get(0) - drift.get(0)  //  de-drift is incremental, the only way the following regression would Not include drift component
+
+    data_dedrifted = array.new_float(len)
+
+    for i = 0 to len - 1
+        data_dedrifted.set(i, src_dedrifted[i])
+
+
+    trend          = linreg(data_dedrifted, data_x, weights, len)
+    data_detrended =                    data_dedrifted.sub(trend)  //  dedrifted data - trend : batch
+
+
+    [drift, data_dedrifted, trend, data_detrended]
+
+
+spectrum(array<float> X_real, 
+         array<float> X_imag, 
+         array<float> weights, int len, string type_magnitudes, string type_bins, bool loglog, bool raw) =>
+    magnitudes  = array.new_float(len)
+    bins        =          ftfreq(len)
+
+    half_len = int(len / 2)
+
+    len1   = 0.
+    len2   = 0.
+    sum_w1 = 0.
+    sum_w2 = 0.
+
+    for i = 0 to len - 1
+        if type_bins == 'period'
+            bins.set(i, 1 / bins.get(i))
+
+        unit   = 1
+        weight = weights.get(i)
+
+        len1   += unit
+        len2   += unit   * unit
+        
+        sum_w1 += weight
+        sum_w2 += weight * weight
+
+
+    for i = 0 to len - 1
+        real = X_real.get(i)
+        imag = X_imag.get(i)
+
+        magnitude = switch type_magnitudes
+            'phase' => atan2(imag, real)
+
+            'energy'    => i == 0                           ?          (real * real + imag * imag) / len2   :
+                           i == half_len and (len % 2 == 0) ?          (real * real + imag * imag) / len2   :
+                           i >  half_len                    ?          (real * real + imag * imag) / len2   :
+                                                                       (real * real + imag * imag) / len2   * 2
+            'magnitude' => i == 0                           ? math.sqrt(real * real + imag * imag) / len1   :
+                           i == half_len and (len % 2 == 0) ? math.sqrt(real * real + imag * imag) / len1   :
+                           i >  half_len                    ? math.sqrt(real * real + imag * imag) / len1   :
+                                                              math.sqrt(real * real + imag * imag) / len1   * 2
+            'power'     => i == 0                           ?          (real * real + imag * imag) / sum_w2 :
+                           i == half_len and (len % 2 == 0) ?          (real * real + imag * imag) / sum_w2 :
+                           i >  half_len                    ?          (real * real + imag * imag) / sum_w2 :
+                                                                       (real * real + imag * imag) / sum_w2 * 2
+            'amplitude' => i == 0                           ? math.sqrt(real * real + imag * imag) / sum_w1 :
+                           i == half_len and (len % 2 == 0) ? math.sqrt(real * real + imag * imag) / sum_w1 :
+                           i >  half_len                    ? math.sqrt(real * real + imag * imag) / sum_w1 :
+                                                              math.sqrt(real * real + imag * imag) / sum_w1 * 2
+
+        magnitudes.set(i, magnitude)
+
+
+    if raw or len < 2
+        [magnitudes, bins]
+    else
+        index_from = 1                                         //  to exclude DC 
+        index_to   = (len % 2 == 0) ? half_len : half_len + 1  //  to exclude Niquist & negatives  
+
+        processed_magnitudes = magnitudes.slice(index_from, index_to)
+        processed_bins       =       bins.slice(index_from, index_to)
+
+        if loglog
+            processed_magnitudes := processed_magnitudes.log(2)  //  because doublings are naturally meaningful for both axis
+            processed_bins       := processed_bins      .log(2)  //  because doublings are naturally meaningful for both axis
+
+
+        [processed_magnitudes, processed_bins]
+
+
+spectral_gating_pf(array<float> X_real, array<float> X_imag, int len, array<float> magnitudes, array<float> bins) =>
+    filtered_X_real = array.new_float(len, 0.)
+    filtered_X_imag = array.new_float(len, 0.)
+    weights_unit    = array.new_float(len, 1 )
+    half_len        =        magnitudes.size()
+
+    if half_len > 0
+        magnitudes_fit = linreg(magnitudes, bins, weights_unit, half_len)
+        magnitudes_res =            magnitudes.sub(magnitudes_fit).exp(2)  //  now residuals follow exponential distro with mean = stdev
+        threshold      =                             magnitudes_res.avg()  // even tho mean = stdev, * 2 threshold affects SNR across differnt lookbacks, that's why * 1  
+                          //  MBAD no impact, rejected        
+                          //  EVT rejected, no impact
+
+        for i = 0 to half_len - 1  //  these lines ensure we do Not touch excluded (DC and Niquist) bins while making filtered coeffs
+            j = i + 1              //  these lines ensure we do Not touch excluded (DC and Niquist) bins while making filtered coeffs
+
+            if magnitudes_res.get(i) > threshold
+                filtered_X_real.set(j, X_real.get(j))
+                filtered_X_imag.set(j, X_imag.get(j))
+                //  find & set the mirror
+                mirror = (len - j) % len
+                if mirror != j 
+                    filtered_X_real.set(mirror, X_real.get(mirror))
+                    filtered_X_imag.set(mirror, X_imag.get(mirror))
+
+
+    [filtered_X_real, filtered_X_imag]
+
+
+spectral_gating_ap(array<float> X_real, array<float> X_imag, int len, array<float> magnitudes, array<float> bins) =>  //  takes shifter Rayleigh data (in case of white noise)) *
+    filtered_X_real = array.new_float(len, 0.)
+    filtered_X_imag = array.new_float(len, 0.)
+    weights_unit    = array.new_float(len, 1 )
+    half_len        =        magnitudes.size()
+
+    if half_len > 0
+        magnitudes_fit = linreg(magnitudes, bins, weights_unit, half_len)
+        magnitudes_res =            magnitudes.sub(magnitudes_fit).pow(2)  //  now spectrum peaks and voids have equal importance
+        threshold      =                             magnitudes_res.avg()
+                          //  EVT rejected, it stops makieng any sense after pow2, after which we treat spikes and voids both as signals
+                          //  MBAD rejected, because after pow2 residuals can't be trated as a disritbuoin per se with known moments
+
+        for i = 0 to half_len - 1  //  these lines ensure we do Not touch excluded (DC and Niquist) bins while making filtered coeffs
+            j = i + 1              //  these lines ensure we do Not touch excluded (DC and Niquist) bins while making filtered coeffs
+
+            if magnitudes_res.get(i) > threshold
+                filtered_X_real.set(j, X_real.get(j))
+                filtered_X_imag.set(j, X_imag.get(j))
+                //  find & set the mirror
+                mirror = (len - j) % len
+                if mirror != j 
+                    filtered_X_real.set(mirror, X_real.get(mirror))
+                    filtered_X_imag.set(mirror, X_imag.get(mirror))
+
+
+    [filtered_X_real, filtered_X_imag]
+//  dependencies........................................................................................................
+
+
+//  data interval logic.................................................................................................
+anchor  = input.string('Moving window', 'anchor',
+ ['1', '5', '24h', 'Session', 'Year', 'Cumulative', 'Moving window', 'Custom session'], group = 'interval')
+
+length  = input        (16         , 'moving window length' , group = 'interval')
+session = input.session('0000-2345', 'custom session period', group = 'interval')
+hybrid  = input        (false      , 'hybrid window'        , group = 'interval')
+
+isNewPeriod = switch anchor
+    '1'       => timeframe.change('1'   )
+    '5'       => timeframe.change('5'   )
+    '24h'     => timeframe.change('1440')
+	'Session' => timeframe.change('D'   )
+	'Year'    => timeframe.change('12M' )
+
+if na(close[1])
+	isNewPeriod := true
+
+var barsInSession = 0
+barsInSession    := isNewPeriod ? 1 : 1 + barsInSession
+
+var barsInSessionCustom = 0
+barsInSessionCustom    := na(time('', session)) ? 1 : 1 + barsInSessionCustom
+
+len = if anchor == 'Cumulative'
+    bar_index + 1
+else  if anchor == 'Moving window'
+    length
+else  if anchor == 'Custom session'
+    barsInSessionCustom
+else
+    barsInSession + (hybrid ? length : 0)
+
+// len := len > bar_index + 1 ? bar_index + 1 : len
+//  data interval logic.................................................................................................
+
+
+//  main................................................................................................................
+src = input(close, 'source', inline = '1', group = 'Data')
+
+kernel = input(true, 'Extended Beta(2, 2) Window', group = 'parameters')
+
+//  data & Extended Beta(2, 2) Window ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+data_x  = array.new_float(len)
+data    = array.new_float(len)
+weights = array.new_float(len)
+
+for i = 0 to len - 1
+    // x  = math.pow((len - i) / (len + 1), input(1))  //  unit Gamma gives linear phase, good for decomposition & Fourier, every1 likes linear phase
+    x  = (len - i) / (len + 1)
+    x2 = math.pow(x, 2)
+    x3 = math.pow(x, 3)
+    x4 = math.pow(x, 4)
+    //  "brought to you by beta(2, 2), all 5"
+    gen = kernel ?     x3 - 0.5 * x4 : 1 //  2nd anti-derivative
+    cdf = kernel ? 3 * x2 - 2   * x3 : 1 //  1st anti-derivative
+    pdf = kernel ? 6 * x  - 6   * x2 : 1 //  main, from there we go both directions
+    fly = kernel ? 6      - 12  * x  : 1 //  1st derivative
+    box = kernel ?         -12       : 1 //  2nd derivative (to highlight symmetry in the kernel)
+
+    weight = pdf * cdf * fly * box * gen
+
+    data_x .set(i, len - i )
+    data   .set(i,   src[i])
+    weights.set(i, weight  )
+
+//  ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+data.pop (   )               //
+data.push(src)               //
+//  Back to the Future vol.4 ~~
+
+mode = input.string('amplitude & period', 'spectrum type', ['amplitude & period', 'power & frequency'],
+tooltip = 'periodogram and spectrogram would only work with "amplitude & period"', group = 'parameters')
+
+//  decomposition DTSN = drift + trend + signal + noise  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[drift, data_dedrifted, trend, data_detrended] = decomposition_dtr(data          , data_x , weights, len) //  only this way drift vs trend separation makes sense
+[X_real, X_imag]                               =              wdft(data_detrended,          weights, len)
+
+[magnitudes, bins] = switch mode
+    'amplitude & period' => spectrum(X_real, X_imag, weights, len, 'amplitude', 'period'   , false, false)
+    'power & frequency'  => spectrum(X_real, X_imag, weights, len, 'power'    , 'frequency', true , false)
+
+[filtered_X_real, filtered_X_imag] = switch mode
+    'amplitude & period' => spectral_gating_ap(X_real, X_imag, len, magnitudes, bins)
+    'power & frequency'  => spectral_gating_pf(X_real, X_imag, len, magnitudes, bins)
+
+
+signal = iwdft(filtered_X_real, filtered_X_imag, weights, len)
+model  =           drift.get(0) + trend.get(0) + signal.get(0)
+noise  =                                           src - model
+
+
+max_mag     =               magnitudes.max    (       )
+max_idx     =               magnitudes.indexof(max_mag)
+main_period = len < 3 ? 1 :       bins.get    (max_idx)
+//  main................................................................................................................
+
+
+//  visuals.............................................................................................................
+//  decomposition upper  ---------------------------------------------------------------------------
+color_trend = trend.get(0) > 0 ? color.blue : trend.get(0) < 0 ? color.red : color.purple
+
+plot(model                      , 'drift + trend + signal', color.maroon, 3, force_overlay = true)
+plot(trend.get(0) + drift.get(0), 'drift + trend'         , color_trend , 1, force_overlay = true)
+plot(drift.get(0)               , 'drift'                 , color.purple, 1, force_overlay = true)
+
+
+
+//  decomposition lower  -----------------------------------------------------------------------------------
+decomposition = input(false, inline = 'style', group = 'style')
+
+
+hline(decomposition ? 0 : na)
+
+
+plot(decomposition ? drift .get(0) - src[len - 1] : na, 'drift' , color.purple, 1                        )
+plot(decomposition ? trend .get(0)                : na, 'trend' , color_trend , 1                        )
+plot(decomposition ? signal.get(0)                : na, 'signal', color.maroon, 3                        )
+plot(decomposition ? noise                        : na, 'noise' , color.gray     , display = display.none)
+
+//  model vs data  ----------------------------------------------------------------
+plot(model, 'model', color.purple                     , display = display.none)
+plot(src  , 'src'  , linestyle = plot.linestyle_dashed, display = display.none)
+
+plot(ta.cum(math.abs(model - src)), 'model vs data cum abs error', color.gray, 
+                             display = display.status_line + display.data_window)
+
+
+//  periodogram  --------------------------------------------------------------------------------------------------
+periodogram = input(false, inline = 'style', group = 'style')
+
+
+if periodogram and mode == 'amplitude & period'
+    var lines = array.new_line()
+
+    if barstate.islast
+        zero =  line.new(na, na, na, na, color = color.gray, style = line.style_dashed                       )
+        dom  = label.new(na, na        , color = color.gray, style = label.style_none, textcolor = color.gray)
+
+        for i = 0 to magnitudes.size() - 1
+            lines.push(line.new(na, na, na, na, color = color.purple))
+
+
+        for [i, v] in lines
+            line.set_xy1(v, bar_index - int(bins.get(i)), 0                       )
+            line.set_xy2(v, bar_index - int(bins.get(i)), array.get(magnitudes, i))
+
+            line.set_xy1(zero, bar_index, 0               )
+            line.set_xy2(zero, bar_index, magnitudes.min())
+
+        line.set_color(lines.get(max_idx), color.gray                        )
+        label.set_xy  (dom, bar_index - int(main_period), -magnitudes.max() / 8)
+        label.set_text(dom, str.tostring(main_period)                          )
+
+
+//  spectrogram  -----------------------------------------------------------------------------
+spectrogram = input(true, tooltip = 'for amplitudes & periods only', inline = 'style', group = 'style')
+
+
+plot(spectrogram and mode == 'amplitude & period' ? main_period : na, 'main period', color.white, 2)
+
+
+_bin_color(target_period) =>
+    k        = 0
+    min_diff = 10e10
+
+    for i = 0 to bins.size() - 1
+        diff = len > 2 ? math.abs(bins.get(i) - target_period) : 0
+        if diff < min_diff
+            min_diff := diff
+            k := i
+    
+    val  = (k >= 0 and k < magnitudes.size()) ? magnitudes.get(k) : 0.0
+    norm = max_mag > 0 ? val / max_mag : 0.0
+
+
+    p = math.max(0, math.min(1, norm))
+    
+    r = 0
+    g = 0
+    b = 0
+
+    r := int(255 *      math.pow(p, 1.5) )
+    g := int(255 *      math.pow(p, 3.0) )
+    b := int(255 * (1 - math.pow(p, 0.5)))
+
+    if p > 0.8
+        g := int(g * 1.2)
+    
+
+    target_period < len ? color.rgb(r, math.min(255, g), math.min(255, b)) : na
+
+
+var h00 = hline(spectrogram ?  0.5 : na, color = na, editable = false)
+var h01 = hline(spectrogram ?  1.5 : na, color = na, editable = false)
+var h02 = hline(spectrogram ?  2.5 : na, color = na, editable = false)
+var h03 = hline(spectrogram ?  3.5 : na, color = na, editable = false)
+var h04 = hline(spectrogram ?  4.5 : na, color = na, editable = false)
+var h05 = hline(spectrogram ?  5.5 : na, color = na, editable = false)
+var h06 = hline(spectrogram ?  6.5 : na, color = na, editable = false)
+var h07 = hline(spectrogram ?  7.5 : na, color = na, editable = false)
+var h08 = hline(spectrogram ?  8.5 : na, color = na, editable = false)
+var h09 = hline(spectrogram ?  9.5 : na, color = na, editable = false)
+var h10 = hline(spectrogram ? 10.5 : na, color = na, editable = false)
+var h11 = hline(spectrogram ? 11.5 : na, color = na, editable = false)
+var h12 = hline(spectrogram ? 12.5 : na, color = na, editable = false)
+var h13 = hline(spectrogram ? 13.5 : na, color = na, editable = false)
+var h14 = hline(spectrogram ? 14.5 : na, color = na, editable = false)
+var h15 = hline(spectrogram ? 15.5 : na, color = na, editable = false)
+var h16 = hline(spectrogram ? 16.5 : na, color = na, editable = false)
+var h17 = hline(spectrogram ? 17.5 : na, color = na, editable = false)
+var h18 = hline(spectrogram ? 18.5 : na, color = na, editable = false)
+var h19 = hline(spectrogram ? 19.5 : na, color = na, editable = false)
+var h20 = hline(spectrogram ? 20.5 : na, color = na, editable = false)
+var h21 = hline(spectrogram ? 21.5 : na, color = na, editable = false)
+var h22 = hline(spectrogram ? 22.5 : na, color = na, editable = false)
+var h23 = hline(spectrogram ? 23.5 : na, color = na, editable = false)
+var h24 = hline(spectrogram ? 24.5 : na, color = na, editable = false)
+var h25 = hline(spectrogram ? 25.5 : na, color = na, editable = false)
+var h26 = hline(spectrogram ? 26.5 : na, color = na, editable = false)
+var h27 = hline(spectrogram ? 27.5 : na, color = na, editable = false)
+var h28 = hline(spectrogram ? 28.5 : na, color = na, editable = false)
+var h29 = hline(spectrogram ? 29.5 : na, color = na, editable = false)
+var h30 = hline(spectrogram ? 30.5 : na, color = na, editable = false)
+var h31 = hline(spectrogram ? 31.5 : na, color = na, editable = false)
+var h32 = hline(spectrogram ? 32.5 : na, color = na, editable = false)
+var h33 = hline(spectrogram ? 33.5 : na, color = na, editable = false)
+var h34 = hline(spectrogram ? 34.5 : na, color = na, editable = false)
+var h35 = hline(spectrogram ? 35.5 : na, color = na, editable = false)
+var h36 = hline(spectrogram ? 36.5 : na, color = na, editable = false)
+var h37 = hline(spectrogram ? 37.5 : na, color = na, editable = false)
+var h38 = hline(spectrogram ? 38.5 : na, color = na, editable = false)
+var h39 = hline(spectrogram ? 39.5 : na, color = na, editable = false)
+var h40 = hline(spectrogram ? 40.5 : na, color = na, editable = false)
+var h41 = hline(spectrogram ? 41.5 : na, color = na, editable = false)
+var h42 = hline(spectrogram ? 42.5 : na, color = na, editable = false)
+var h43 = hline(spectrogram ? 43.5 : na, color = na, editable = false)
+var h44 = hline(spectrogram ? 44.5 : na, color = na, editable = false)
+var h45 = hline(spectrogram ? 45.5 : na, color = na, editable = false)
+var h46 = hline(spectrogram ? 46.5 : na, color = na, editable = false)
+var h47 = hline(spectrogram ? 47.5 : na, color = na, editable = false)
+var h48 = hline(spectrogram ? 48.5 : na, color = na, editable = false)
+var h49 = hline(spectrogram ? 49.5 : na, color = na, editable = false)
+
+fill(h00, h01, spectrogram ? _bin_color(0 ) : na, editable = false)
+fill(h01, h02, spectrogram ? _bin_color(1 ) : na, editable = false)
+fill(h02, h03, spectrogram ? _bin_color(2 ) : na, editable = false)
+fill(h03, h04, spectrogram ? _bin_color(3 ) : na, editable = false)
+fill(h04, h05, spectrogram ? _bin_color(4 ) : na, editable = false)
+fill(h05, h06, spectrogram ? _bin_color(5 ) : na, editable = false)
+fill(h06, h07, spectrogram ? _bin_color(6 ) : na, editable = false)
+fill(h07, h08, spectrogram ? _bin_color(7 ) : na, editable = false)
+fill(h08, h09, spectrogram ? _bin_color(8 ) : na, editable = false)
+fill(h09, h10, spectrogram ? _bin_color(9 ) : na, editable = false)
+fill(h10, h11, spectrogram ? _bin_color(10) : na, editable = false)
+fill(h11, h12, spectrogram ? _bin_color(11) : na, editable = false)
+fill(h12, h13, spectrogram ? _bin_color(12) : na, editable = false)
+fill(h13, h14, spectrogram ? _bin_color(13) : na, editable = false)
+fill(h14, h15, spectrogram ? _bin_color(14) : na, editable = false)
+fill(h15, h16, spectrogram ? _bin_color(15) : na, editable = false)
+fill(h16, h17, spectrogram ? _bin_color(16) : na, editable = false)
+fill(h17, h18, spectrogram ? _bin_color(17) : na, editable = false)
+fill(h18, h19, spectrogram ? _bin_color(18) : na, editable = false)
+fill(h19, h20, spectrogram ? _bin_color(19) : na, editable = false)
+fill(h20, h21, spectrogram ? _bin_color(20) : na, editable = false)
+fill(h21, h22, spectrogram ? _bin_color(21) : na, editable = false)
+fill(h22, h23, spectrogram ? _bin_color(22) : na, editable = false)
+fill(h23, h24, spectrogram ? _bin_color(23) : na, editable = false)
+fill(h24, h25, spectrogram ? _bin_color(24) : na, editable = false)
+fill(h25, h26, spectrogram ? _bin_color(25) : na, editable = false)
+fill(h26, h27, spectrogram ? _bin_color(26) : na, editable = false)
+fill(h27, h28, spectrogram ? _bin_color(27) : na, editable = false)
+fill(h28, h29, spectrogram ? _bin_color(28) : na, editable = false)
+fill(h29, h30, spectrogram ? _bin_color(29) : na, editable = false)
+fill(h30, h31, spectrogram ? _bin_color(30) : na, editable = false)
+fill(h31, h32, spectrogram ? _bin_color(31) : na, editable = false)
+fill(h32, h33, spectrogram ? _bin_color(32) : na, editable = false)
+fill(h33, h34, spectrogram ? _bin_color(33) : na, editable = false)
+fill(h34, h35, spectrogram ? _bin_color(34) : na, editable = false)
+fill(h35, h36, spectrogram ? _bin_color(35) : na, editable = false)
+fill(h36, h37, spectrogram ? _bin_color(36) : na, editable = false)
+fill(h37, h38, spectrogram ? _bin_color(37) : na, editable = false)
+fill(h38, h39, spectrogram ? _bin_color(38) : na, editable = false)
+fill(h39, h40, spectrogram ? _bin_color(39) : na, editable = false)
+fill(h40, h41, spectrogram ? _bin_color(40) : na, editable = false)
+fill(h41, h42, spectrogram ? _bin_color(41) : na, editable = false)
+fill(h42, h43, spectrogram ? _bin_color(42) : na, editable = false)
+fill(h43, h44, spectrogram ? _bin_color(43) : na, editable = false)
+fill(h44, h45, spectrogram ? _bin_color(44) : na, editable = false)
+fill(h45, h46, spectrogram ? _bin_color(45) : na, editable = false)
+fill(h46, h47, spectrogram ? _bin_color(46) : na, editable = false)
+fill(h47, h48, spectrogram ? _bin_color(47) : na, editable = false)
+fill(h48, h49, spectrogram ? _bin_color(48) : na, editable = false)
+//  visuals.............................................................................................................
+
+
+//  ∞
